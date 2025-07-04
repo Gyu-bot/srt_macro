@@ -18,7 +18,7 @@ import webbrowser
 dotenv.load_dotenv()
 
 def send_discord_notification(message: str):
-    webhook_url = "https://discordapp.com/api/webhooks/1390586734991114251/i7twwUzuCMdEYEf7dl_T98a3Y4FcSlqCo4o4YVjEV9VzLRBNtxlDJObAGScidAXHlKIs"
+    webhook_url = os.getenv("DISCORD_WEB_HOOK")
     data = {"content": message}
     response = requests.post(webhook_url, json=data)
     return response.status_code == 204

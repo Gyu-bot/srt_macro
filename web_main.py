@@ -1,5 +1,3 @@
-# edit date : 2024-04-26
-# version : 1.9.0
 
 from random import randint
 from selenium import webdriver
@@ -19,7 +17,7 @@ import webbrowser
 dotenv.load_dotenv()
 
 def send_discord_notification(message: str):
-    webhook_url = "https://discordapp.com/api/webhooks/1390586734991114251/i7twwUzuCMdEYEf7dl_T98a3Y4FcSlqCo4o4YVjEV9VzLRBNtxlDJObAGScidAXHlKIs"
+    webhook_url = os.getenv("DISCORD_WEB_HOOK")
     data = {"content": message}
     response = requests.post(webhook_url, json=data)
     return response.status_code == 204
@@ -53,14 +51,6 @@ to_train_number = 5 # 몇번째 기차까지 조회할지 min = from_train_numbe
 reserved = False
 
 print("--------------- Start SRT Macro ---------------")
-
-# webdriver 파일의 경로 입력
-# 같은 디렉토리에 있기 때문에 chromedriver.exe파일 이름만 써줌
-print("selenium version : ", get_selenium_version())
-
-# selenium 버전에 따른 webdriver 분기
-# v1, v2, v3 = get_selenium_version().split(".")
-# driver = webdriver.Chrome("chromedriver") if int(v1) < 4 else webdriver.Chrome()
 
 driver = webdriver.Chrome(options=chrome_options)
 
