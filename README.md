@@ -17,7 +17,6 @@ to_train_number = 10 # 몇번째 기차까지 조회할지 min = from_train_numb
 
 ## 환경변수
 
-```
 `.env`파일 생성 후 아래 변수 추가<br/>
 ```
 MEMBER_NUMBER="123456789" 
