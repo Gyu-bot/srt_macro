@@ -5,9 +5,10 @@ from random import randint
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.select import Select
+from selenium.webdriver.chrome.options import Options
 from modules.selenium import *
 from selenium.webdriver.chrome.service import Service as ChromeService
-from webdriver_manager.chrome import ChromeDriverManager
+
 import requests
 import os
 import dotenv
@@ -23,7 +24,14 @@ def send_discord_notification(message: str):
     response = requests.post(webhook_url, json=data)
     return response.status_code == 204
 
-chrome_path = 'C:/Program Files/Google/Chrome/Application/chrome.exe %s'
+# chrome_path = 'C:/Program Files/Google/Chrome/Application/chrome.exe %s'
+
+## Selelum Image docker에서 실행시
+
+chrome_options = Options()
+chrome_options.add_argument("--headless")
+chrome_options.add_argument("--no-sandbox")
+chrome_options.add_argument("--disable-dev-shm-usage")
 
 ############# 자동 예매 원하는 설정으로 변경 ##############
 
@@ -54,8 +62,7 @@ print("selenium version : ", get_selenium_version())
 # v1, v2, v3 = get_selenium_version().split(".")
 # driver = webdriver.Chrome("chromedriver") if int(v1) < 4 else webdriver.Chrome()
 
-service = ChromeService(executable_path=ChromeDriverManager().install())
-driver = webdriver.Chrome(service=service)
+driver = webdriver.Chrome(options=chrome_options)
 
 # 이동을 원하는 페이지 주소 입력
 driver.get('https://etk.srail.co.kr/cmc/01/selectLoginForm.do')
@@ -122,7 +129,7 @@ while True:
                     reserved = True
                     print('예약 성공')
                     send_discord_notification("예약을 성공했습니다. 10분내에 결제해주세요")
-                    webbrowser.get(chrome_path).open("https://etk.srail.kr/hpg/hra/02/selectReservationList.do?pageId=TK0102010000")
+                    # webbrowser.get(chrome_path).open("https://etk.srail.kr/hpg/hra/02/selectReservationList.do?pageId=TK0102010000")
                     break
 
                 else:
@@ -144,7 +151,7 @@ while True:
                             reserved = True
                             print('예약대기 성공')
                             send_discord_notification("예약대기 성공했습니다.")
-                            webbrowser.get(chrome_path).open("https://etk.srail.kr/hpg/hra/02/selectReservationList.do?pageId=TK0102010000")
+                            # webbrowser.get(chrome_path).open("https://etk.srail.kr/hpg/hra/02/selectReservationList.do?pageId=TK0102010000")
                             break
 
                         else:
@@ -184,12 +191,3 @@ while True:
     else:
         time.sleep(1000)
         break
-
-
-
-
-
-
-
-    
-
