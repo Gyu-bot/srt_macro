@@ -6,26 +6,28 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.select import Select
 from modules.selenium import *
+from selenium.webdriver.chrome.service import Service as ChromeService
+from webdriver_manager.chrome import ChromeDriverManager
 
 import time
 import webbrowser
 
-chrome_path = 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe %s'
+chrome_path = 'C:/Program Files/Google/Chrome/Application/chrome.exe %s'
 
 ############# 자동 예매 원하는 설정으로 변경 ##############
 
-member_number = "0000000000" # 회원번호
-password= "password" # 비밀번호
+member_number = "1694025773" # 회원번호
+password= "10thplanet" # 비밀번호
 arrival = "동대구" # 출발지
-departure = "수서" # 도착지
-standard_date = "20240506" # 기준날짜 ex) 20221101
-standard_time = "12" # 기준 시간 ex) 00 - 22 // 2의 배수로 입력
+departure = "동탄" # 도착지
+standard_date = "20250704" # 기준날짜 ex) 20221101
+standard_time = "18" # 기준 시간 ex) 00 - 22 // 2의 배수로 입력
 
 """
 현재 페이지에 나타난 기차 몇번째 줄부터 몇번째 줄의 기차까지 조회할지 선택 
 """
 from_train_number = 1 # 몇번째 기차부터 조회할지  min = 1, max = 10
-to_train_number = 10 # 몇번째 기차까지 조회할지 min = from_train_number, max = 10
+to_train_number = 4 # 몇번째 기차까지 조회할지 min = from_train_number, max = 10
 
 #################################################################
 
@@ -38,8 +40,11 @@ print("--------------- Start SRT Macro ---------------")
 print("selenium version : ", get_selenium_version())
 
 # selenium 버전에 따른 webdriver 분기
-v1, v2, v3 = get_selenium_version().split(".")
-driver = webdriver.Chrome("chromedriver") if int(v1) < 4 else webdriver.Chrome()
+# v1, v2, v3 = get_selenium_version().split(".")
+# driver = webdriver.Chrome("chromedriver") if int(v1) < 4 else webdriver.Chrome()
+
+service = ChromeService(executable_path=ChromeDriverManager().install())
+driver = webdriver.Chrome(service=service)
 
 # 이동을 원하는 페이지 주소 입력
 driver.get('https://etk.srail.co.kr/cmc/01/selectLoginForm.do')
@@ -53,8 +58,7 @@ driver.find_element(By.ID, 'srchDvNm01').send_keys(member_number)
 driver.find_element(By.ID, 'hmpgPwdCphd01').send_keys(password)
 
 # 확인 버튼 클릭
-driver.find_element(By.XPATH, '/html/body/div/div[4]/div/div[2]/form/\
-    fieldset/div[1]/div[1]/div[2]/div/div[2]/input').click()
+driver.find_element(By.XPATH, '/html/body/div/div[4]/div/div[2]/form/fieldset/div[1]/div[2]/div[2]/div/div[2]/input').click()
 driver.implicitly_wait(5)
 
 driver.get('https://etk.srail.kr/hpg/hra/01/selectScheduleList.do')
@@ -100,8 +104,7 @@ while True:
 
             if "예약하기" in standard_seat:
                 print("예약 가능 클릭")
-                driver.find_element(By.XPATH, f"/html/body/div[1]/div[4]/div/div[3]/div[1]/\
-                form/fieldset/div[6]/table/tbody/tr[{i}]/td[7]/a/span").click()
+                driver.find_element(By.XPATH, f"/html/body/div[1]/div[4]/div/div[3]/div[1]/form/fieldset/div[6]/table/tbody/tr[{i}]/td[7]/a/span").click()
                 driver.implicitly_wait(3)
 
                 if driver.find_elements(By.ID, 'isFalseGotoMain'):
