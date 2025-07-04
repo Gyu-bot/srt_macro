@@ -25,7 +25,7 @@ def send_discord_notification(message: str):
 ## Selelum Image docker에서 실행시
 
 chrome_options = Options()
-chrome_options.add_argument("--headless")
+# chrome_options.add_argument("--headless")
 chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--disable-dev-shm-usage")
 

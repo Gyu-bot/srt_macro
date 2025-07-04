@@ -33,12 +33,14 @@ arrival = "동대구" # 출발지
 departure = "동탄" # 도착지
 standard_date = "20250704" # 기준날짜 ex) 20221101
 standard_time = "18" # 기준 시간 ex) 00 - 22 // 2의 배수로 입력
+seat_types = "standard"
+seat_type_list = []
 
 """
 현재 페이지에 나타난 기차 몇번째 줄부터 몇번째 줄의 기차까지 조회할지 선택 
 """
-from_train_number = 4 # 몇번째 기차부터 조회할지  min = 1, max = 10
-to_train_number = 5 # 몇번째 기차까지 조회할지 min = from_train_number, max = 10
+from_train_number = 1 # 몇번째 기차부터 조회할지  min = 1, max = 10
+to_train_number = 4 # 몇번째 기차까지 조회할지 min = from_train_number, max = 10
 
 #################################################################
 
@@ -107,54 +109,61 @@ div.tbl_wrap.th_thead > table > tbody > tr")
 
 print(train_list)
 
+if seat_types == "standard":
+    seat_type_list = [7]
+elif seat_types == "special":
+    seat_type_list = [6]
+elif seat_types == "both":
+    seat_type_list = [6, 7]
 
 while True: 
     try:
-        for i in range(from_train_number, to_train_number + 1):
-            standard_seat = driver.find_element(By.CSS_SELECTOR, f"#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr:nth-child({i}) > td:nth-child(7)").text
+        for seat_type in [6, 7]:
+            for i in range(from_train_number, to_train_number + 1):
+                standard_seat = driver.find_element(By.CSS_SELECTOR, f"#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr:nth-child({i}) > td:nth-child(7)").text
 
-            if "예약하기" in standard_seat:
-                print("예약 가능 클릭")
-                driver.find_element(By.XPATH, f"/html/body/div[1]/div[4]/div/div[3]/div[1]/form/fieldset/div[6]/table/tbody/tr[{i}]/td[7]/a/span").click()
-                driver.implicitly_wait(10)
-
-                if driver.find_elements(By.ID, 'isFalseGotoMain'):
-                    reserved = True
-                    print('예약 성공')
-                    send_discord_notification("예약을 성공했습니다. 10분내에 결제해주세요")
-                    webbrowser.get(chrome_path).open("https://etk.srail.kr/hpg/hra/02/selectReservationList.do?pageId=TK0102010000")
-                    break
-
-                else:
-                    print("잔여석 없음. 다시 검색")
-                    driver.back() #뒤로가기
+                if "예약하기" in standard_seat:
+                    print("예약 가능 클릭")
+                    driver.find_element(By.XPATH, f"/html/body/div[1]/div[4]/div/div[3]/div[1]/form/fieldset/div[6]/table/tbody/tr[{i}]/td[{seat_type}]/a/span").click()
                     driver.implicitly_wait(5)
 
-            else :
-                try:
-                    standby_seat = driver.find_element(By.CSS_SELECTOR, f"#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr:nth-child({i}) > td:nth-child(8)").text
+                    if driver.find_elements(By.ID, 'isFalseGotoMain'):
+                        reserved = True
+                        print('예약 성공')
+                        send_discord_notification("예약을 성공했습니다. 10분내에 결제해주세요")
+                        webbrowser.get(chrome_path).open("https://etk.srail.kr/hpg/hra/02/selectReservationList.do?pageId=TK0102010000")
+                        break
 
-                    if "신청하기" in standby_seat:
-                        print("예약 대기 신청")
-                        driver.find_element(By.XPATH, f"/html/body/div[1]/div[4]/div/div[3]/div[1]/\
-                        form/fieldset/div[6]/table/tbody/tr[{i}]/td[8]/a/span").click()
-                        driver.implicitly_wait(5)
+                    else:
+                        print("잔여석 없음. 다시 검색")
+                        driver.back() #뒤로가기
+                        driver.implicitly_wait(3)
 
-                        if driver.find_elements(By.ID, 'isFalseGotoMain'):
-                            reserved = True
-                            print('예약대기 성공')
-                            send_discord_notification("예약대기 성공했습니다.")
-                            webbrowser.get(chrome_path).open("https://etk.srail.kr/hpg/hra/02/selectReservationList.do?pageId=TK0102010000")
-                            break
+                else :
+                    try:
+                        standby_seat = driver.find_element(By.CSS_SELECTOR, f"#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr:nth-child({i}) > td:nth-child(8)").text
 
-                        else:
-                            print("예약 대기 신청 실패. 다시 검색")
-                            driver.back() #뒤로가기
+                        if "신청하기" in standby_seat:
+                            print("예약 대기 신청")
+                            driver.find_element(By.XPATH, f"/html/body/div[1]/div[4]/div/div[3]/div[1]/\
+                            form/fieldset/div[6]/table/tbody/tr[{i}]/td[8]/a/span").click()
                             driver.implicitly_wait(5)
 
-                except:
-                    print("예약 대기 신청 불가")
-                    pass
+                            if driver.find_elements(By.ID, 'isFalseGotoMain'):
+                                reserved = True
+                                print('예약대기 성공')
+                                send_discord_notification("예약대기 성공했습니다.")
+                                webbrowser.get(chrome_path).open("https://etk.srail.kr/hpg/hra/02/selectReservationList.do?pageId=TK0102010000")
+                                break
+
+                            else:
+                                print("예약 대기 신청 실패. 다시 검색")
+                                driver.back() #뒤로가기
+                                driver.implicitly_wait(5)
+
+                    except:
+                        print("예약 대기 신청 불가")
+                        pass
 
 
     except: 
