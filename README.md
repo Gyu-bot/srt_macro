@@ -13,7 +13,7 @@ from_train_number = 1 # 몇번째 기차부터 조회할지  min = 1, max = 10
 to_train_number = 10 # 몇번째 기차까지 조회할지 min = from_train_number, max = 10
 
 `send_discord_notification` 부분은 Discord 알림 미사용시 주석처리
-
+```
 
 ## 환경변수
 
