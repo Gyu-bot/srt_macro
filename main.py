@@ -116,7 +116,7 @@ while True:
             if "예약하기" in standard_seat:
                 print("예약 가능 클릭")
                 driver.find_element(By.XPATH, f"/html/body/div[1]/div[4]/div/div[3]/div[1]/form/fieldset/div[6]/table/tbody/tr[{i}]/td[7]/a/span").click()
-                driver.implicitly_wait(3)
+                driver.implicitly_wait(10)
 
                 if driver.find_elements(By.ID, 'isFalseGotoMain'):
                     reserved = True
@@ -138,7 +138,7 @@ while True:
                         print("예약 대기 신청")
                         driver.find_element(By.XPATH, f"/html/body/div[1]/div[4]/div/div[3]/div[1]/\
                         form/fieldset/div[6]/table/tbody/tr[{i}]/td[8]/a/span").click()
-                        driver.implicitly_wait(3)
+                        driver.implicitly_wait(5)
 
                         if driver.find_elements(By.ID, 'isFalseGotoMain'):
                             reserved = True
