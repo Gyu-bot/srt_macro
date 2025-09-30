@@ -79,18 +79,38 @@ def open_reservation_page(url: str) -> None:
 
 member_number = os.getenv("MEMBER_NUMBER")  # 회원번호
 password = os.getenv("PASSWORD")  # 비밀번호
-arrival = "동대구"  # 출발지
-departure = "동탄"  # 도착지
-standard_date = "20250926"  # 기준날짜 ex) 20221101
-standard_time = "18"  # 기준 시간 ex) 00 - 22 // 2의 배수로 입력
-seat_types = "standard"
-seat_type_list: list[int] = []
+DEFAULT_ARRIVAL = "수서"
+DEFAULT_DEPARTURE = "부산역"
+DEFAULT_STANDARD_DATE = "20250926"  # 기준날짜 ex) 20221101
+DEFAULT_STANDARD_TIME = "18"  # 기준 시간 ex) 00 - 22 // 2의 배수로 입력
+DEFAULT_SEAT_TYPES = "both"  # 선택 가능: special, standard, both
 
 """
 현재 페이지에 나타난 기차 몇번째 줄부터 몇번째 줄의 기차까지 조회할지 선택
 """
-from_train_number = 4  # 몇번째 기차부터 조회할지  min = 1, max = 10
-to_train_number = 5  # 몇번째 기차까지 조회할지 min = from_train_number, max = 10
+DEFAULT_FROM_TRAIN_NUMBER = 3
+DEFAULT_TO_TRAIN_NUMBER = 4
+
+
+def prompt_str(prompt: str, default: str) -> str:
+    user_input = input(f"{prompt} [{default}]: ").strip()
+    return user_input or default
+
+
+def prompt_int(prompt: str, default: int, *, min_value: int = 1, max_value: int = 10) -> int:
+    while True:
+        user_input = input(f"{prompt} [{default}]: ").strip()
+        if not user_input:
+            return default
+        try:
+            value = int(user_input)
+        except ValueError:
+            print("숫자를 입력하세요.")
+            continue
+        if not (min_value <= value <= max_value):
+            print(f"{min_value}부터 {max_value} 사이의 숫자를 입력하세요.")
+            continue
+        return value
 
 #################################################################
 
@@ -139,17 +159,28 @@ def launch_browser(playwright: Playwright) -> tuple[Browser, BrowserContext]:
     return browser, context
 
 
-def main() -> None:
+def main(
+    arrival: str = DEFAULT_ARRIVAL,
+    departure: str = DEFAULT_DEPARTURE,
+    from_train_number: int = DEFAULT_FROM_TRAIN_NUMBER,
+    to_train_number: int = DEFAULT_TO_TRAIN_NUMBER,
+    standard_date: str = DEFAULT_STANDARD_DATE,
+    standard_time: str = DEFAULT_STANDARD_TIME,
+    seat_types: str = DEFAULT_SEAT_TYPES,
+) -> None:
     reserved = False
 
     print("--------------- Start SRT Macro ---------------")
 
-    if seat_types == "standard":
-        seat_type_list[:] = [7]
-    elif seat_types == "special":
-        seat_type_list[:] = [6]
-    elif seat_types == "both":
-        seat_type_list[:] = [6, 7]
+    seat_preference = (seat_types or DEFAULT_SEAT_TYPES).strip().lower()
+    if seat_preference == "standard":
+        seat_type_list: list[int] = [7]
+    elif seat_preference == "special":
+        seat_type_list = [6]
+    else:
+        if seat_preference not in {"both", "special", "standard"}:
+            print("알 수 없는 좌석 종류입니다. 일반+특실로 진행합니다.")
+        seat_type_list = [6, 7]
 
     refresh_count = 0
 
@@ -204,7 +235,7 @@ def main() -> None:
 
         while True:
             try:
-                for seat_type in [6, 7]:
+                for seat_type in seat_type_list:
                     for row_index in range(from_train_number, to_train_number + 1):
                         standard_selector = (
                             "#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > "
@@ -305,4 +336,29 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    arrival = prompt_str("출발지를 입력하세요", DEFAULT_ARRIVAL)
+    departure = prompt_str("도착지를 입력하세요", DEFAULT_DEPARTURE)
+    standard_date = prompt_str("기준 날짜(YYYYMMDD)를 입력하세요", DEFAULT_STANDARD_DATE)
+    standard_time = prompt_str("기준 시간(00, 02, ..., 22)을 입력하세요", DEFAULT_STANDARD_TIME)
+    seat_types = prompt_str(
+        "좌석 종류를 입력하세요 (special / standard / both)", DEFAULT_SEAT_TYPES
+    )
+    from_train_number = prompt_int(
+        "조회 시작 열차 순번", DEFAULT_FROM_TRAIN_NUMBER, min_value=1, max_value=10
+    )
+    to_default = max(DEFAULT_TO_TRAIN_NUMBER, from_train_number)
+    to_train_number = prompt_int(
+        "조회 종료 열차 순번",
+        to_default,
+        min_value=from_train_number,
+        max_value=10,
+    )
+    main(
+        arrival,
+        departure,
+        from_train_number,
+        to_train_number,
+        standard_date,
+        standard_time,
+        seat_types,
+    )
