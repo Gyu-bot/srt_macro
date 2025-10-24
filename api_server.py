@@ -301,24 +301,24 @@ def render_page(message: str = "") -> HTMLResponse:
           body {{ font-family: system-ui, -apple-system, sans-serif; margin: 2rem; }}
           .card {{ max-width: 720px; padding: 1.25rem; border: 1px solid #e5e7eb; border-radius: 8px; }}
           .row {{ display: grid; grid-template-columns: 1fr 2fr; gap: .75rem; margin-bottom: .75rem; align-items: center; }}
-          input, select {{ width: 100%; padding: .5rem .6rem; border: 1px solid #d1d5db; border-radius: 6px; }}
+          input, select {{ max-width: 10em; padding: .5rem .6rem; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; }}
           .actions {{ display: flex; gap: .5rem; margin-top: 1rem; }}
           button {{ padding: .6rem 1rem; border: 0; border-radius: 6px; cursor: pointer; }}
-          .primary {{ background: #2563eb; color: white; }}
+          .primary {{ background:rgb(62, 66, 75); color: white; }}
           .danger {{ background: #dc2626; color: white; }}
           .muted {{ color: #6b7280; }}
           .status {{ margin-bottom: 1rem; }}
           .msg {{ margin: .5rem 0; color: #374151; }}
           .running {{ color: #16a34a; font-weight: 600; }}
           .stopped {{ color: #9ca3af; font-weight: 600; }}
-          pre {{ background: #0b1020; color: #d1d5db; padding: .75rem; border-radius: 6px; max-height: 360px; overflow: auto; }}
+          pre {{ background: #0b1020; color: #d1d5db; padding: .75rem; border-radius: 6px; height: 9em; max-width: 40em; overflow-y: auto; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; }}
         </style>
       </head>
       <body>
         <h1>SRT Macro Controller</h1>
         <div class="card">
           <div class="status">
-            상태: {('<span class=running>실행 중</span>' if running else '<span class=stopped>대기</span>')} {('PID ' + str(pid) if running and pid else '')}
+            상태: <span id="status-text" class="{('running' if running else 'stopped')}">{'동작 중' if running else '대기'}</span> <span id="status-pid">{('PID ' + str(pid) if running and pid else '')}</span>
           </div>
           {f'<div class=msg>{message}</div>' if message else ''}
           {f'<div class=msg style="color:#dc2626;white-space:pre-wrap">{last_error}</div>' if last_error else ''}
@@ -346,10 +346,73 @@ def render_page(message: str = "") -> HTMLResponse:
             </div>
           </form>
           <h3>실시간 로그</h3>
-          <pre id="logbox">[logs] 연결 시도 중...</pre>
+          <pre id="logbox">[logs] 초기화 중...</pre>
         </div>
         <p class="muted">.env에 MEMBER_NUMBER, PASSWORD가 설정되어 있어야 합니다.</p>
-        <script src="/client.js" defer></script>
+        <script>
+          // 인라인으로 즉시 실행 (캐시 문제 방지)
+          (function(){{
+            var logEl = document.getElementById('logbox');
+            var statusTextEl = document.getElementById('status-text');
+            var statusPidEl = document.getElementById('status-pid');
+            if(!logEl) {{ console.error('[logs] logbox not found'); return; }}
+            function append(line){{
+              try{{ logEl.textContent += (line + "\\n"); logEl.scrollTop = logEl.scrollHeight; }}
+              catch(e){{ console.error('append failed', e); }}
+            }}
+            function updateStatus(running, pid){{
+              if(!statusTextEl) return;
+              if(running){{
+                statusTextEl.textContent = '동작 중';
+                statusTextEl.className = 'running';
+                if(statusPidEl && pid) statusPidEl.textContent = 'PID ' + pid;
+              }}else{{
+                statusTextEl.textContent = '대기';
+                statusTextEl.className = 'stopped';
+                if(statusPidEl) statusPidEl.textContent = '';
+              }}
+            }}
+            var es; var pollTimer = null; var established = false;
+            function startPoll(){{
+              if(pollTimer) return;
+              append('[logs] 폴링 시작');
+              var lastLen = 0;
+              pollTimer = setInterval(function(){{
+                fetch('/logs.json').then(function(res){{ return res.json(); }}).then(function(j){{
+                  var lines = (j && j.lines) || [];
+                  if(lastLen > lines.length) lastLen = 0;
+                  for(var i=lastLen;i<lines.length;i++) append(lines[i]);
+                  lastLen = lines.length;
+                }}).catch(function(err){{ console.warn('poll failed', err); }});
+                // 상태도 폴링으로 업데이트
+                fetch('/status').then(function(res){{ return res.json(); }}).then(function(s){{
+                  updateStatus(s.running, s.pid);
+                }}).catch(function(err){{ console.warn('status poll failed', err); }});
+              }}, 1500);
+            }}
+            // 즉시 폴링 시작
+            startPoll();
+            var fallbackTimer = setTimeout(function(){{
+              if(!established){{
+                append('[logs] SSE 지연 - 폴백 유지');
+                try{{ es && es.close(); }}catch(e){{}}
+              }}
+            }}, 1500);
+            try{{
+              es = new EventSource('/logs');
+              es.onopen = function(){{
+                established = true; clearTimeout(fallbackTimer); append('[logs] SSE 연결됨');
+                if(pollTimer){{ try{{ clearInterval(pollTimer); }}catch(e){{}} pollTimer = null; append('[logs] 폴링 중지'); }}
+              }};
+              es.onmessage = function(e){{ established = true; clearTimeout(fallbackTimer); append(e.data); }};
+              es.onerror = function(){{
+                append('[logs] SSE 연결 끊김 - 폴링으로 계속');
+                try{{ es.close(); }}catch(e){{}}
+                if(!pollTimer) startPoll();
+              }};
+            }}catch(e){{ console.error('SSE init failed', e); startPoll(); }}
+          }})();
+        </script>
       </body>
     </html>
     """
@@ -496,7 +559,7 @@ JS_CLIENT = """
       var es; var pollTimer = null; var established = false;
       function startPoll(){
         if(pollTimer) return;
-        append('[logs] 폴백 폴링 시작');
+        append('[logs] 폴링 시작');
         var lastLen = 0;
         pollTimer = setInterval(function(){
           fetch('/logs.json').then(function(res){ return res.json(); }).then(function(j){
@@ -504,21 +567,29 @@ JS_CLIENT = """
             if(lastLen > lines.length) lastLen = 0;
             for(var i=lastLen;i<lines.length;i++) append(lines[i]);
             lastLen = lines.length;
-          }).catch(function(_){});
+          }).catch(function(_){ });
         }, 1500);
       }
+      // 최소 보장: 즉시 폴링 시작 (SSE 연결 시 중지)
+      startPoll();
       var fallbackTimer = setTimeout(function(){
         if(!established){
-          append('[logs] SSE 지연 - 폴백으로 전환');
+          append('[logs] SSE 지연 - 폴백 유지');
           try{ es && es.close(); }catch(e){}
-          startPoll();
         }
       }, 1500);
       try{
         es = new EventSource('/logs');
-        es.onopen = function(){ established = true; clearTimeout(fallbackTimer); append('[logs] connected'); };
+        es.onopen = function(){
+          established = true; clearTimeout(fallbackTimer); append('[logs] SSE 연결됨');
+          if(pollTimer){ try{ clearInterval(pollTimer); }catch(e){} pollTimer = null; append('[logs] 폴링 중지'); }
+        };
         es.onmessage = function(e){ established = true; clearTimeout(fallbackTimer); append(e.data); };
-        es.onerror = function(){ append('[logs] 연결 끊김. 폴백으로 전환'); try{ es.close(); }catch(e){} startPoll(); };
+        es.onerror = function(){
+          append('[logs] SSE 연결 끊김 - 폴링으로 계속');
+          try{ es.close(); }catch(e){}
+          if(!pollTimer) startPoll();
+        };
       }catch(e){ startPoll(); }
     }catch(e){ console.error('init error', e); }
   }

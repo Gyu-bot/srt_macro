@@ -79,17 +79,17 @@ def open_reservation_page(url: str) -> None:
 
 member_number = os.getenv("MEMBER_NUMBER")  # 회원번호
 password = os.getenv("PASSWORD")  # 비밀번호
-DEFAULT_ARRIVAL = "수서"
-DEFAULT_DEPARTURE = "부산역"
-DEFAULT_STANDARD_DATE = "20250926"  # 기준날짜 ex) 20221101
+DEFAULT_ARRIVAL = "동대구"
+DEFAULT_DEPARTURE = "동탄"
+DEFAULT_STANDARD_DATE = "20251024"  # 기준날짜 ex) 20221101
 DEFAULT_STANDARD_TIME = "18"  # 기준 시간 ex) 00 - 22 // 2의 배수로 입력
 DEFAULT_SEAT_TYPES = "both"  # 선택 가능: special, standard, both
 
 """
 현재 페이지에 나타난 기차 몇번째 줄부터 몇번째 줄의 기차까지 조회할지 선택
 """
-DEFAULT_FROM_TRAIN_NUMBER = 3
-DEFAULT_TO_TRAIN_NUMBER = 4
+DEFAULT_FROM_TRAIN_NUMBER = 1
+DEFAULT_TO_TRAIN_NUMBER = 3
 
 
 def prompt_str(prompt: str, default: str) -> str:
@@ -116,7 +116,7 @@ def prompt_int(prompt: str, default: int, *, min_value: int = 1, max_value: int 
 
 
 def get_launch_options() -> dict:
-    headless = os.getenv("PLAYWRIGHT_HEADLESS", "false").lower() == "true"
+    headless = os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() == "true"
     launch_options: dict = {"headless": headless}
 
     browser_path = os.getenv("PLAYWRIGHT_BROWSER_PATH")
@@ -227,11 +227,6 @@ def main(
 
         page.locator("css=input[value='조회하기']").click()
         wait_for_page_idle(page, timeout=5000)
-
-        train_rows = page.locator(
-            "#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr"
-        ).element_handles()
-        print(train_rows)
 
         while True:
             try:
