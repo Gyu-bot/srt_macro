@@ -55,16 +55,16 @@ member_number = os.getenv("MEMBER_NUMBER")  # 회원번호
 password = os.getenv("PASSWORD")  # 비밀번호
 arrival = "동대구"  # 출발지
 departure = "동탄"  # 도착지
-standard_date = "20250926"  # 기준날짜 ex) 20221101
-standard_time = "16"  # 기준 시간 ex) 00 - 22 // 2의 배수로 입력
+standard_date = "20251024"  # 기준날짜 ex) 20221101
+standard_time = "18"  # 기준 시간 ex) 00 - 22 // 2의 배수로 입력
 seat_types = "standard"
-seat_type_list: list[int] = []
+seat_type_list = []
 
 """
 현재 페이지에 나타난 기차 몇번째 줄부터 몇번째 줄의 기차까지 조회할지 선택
 """
-from_train_number = 4  # 몇번째 기차부터 조회할지  min = 1, max = 10
-to_train_number = 7  # 몇번째 기차까지 조회할지 min = from_train_number, max = 10
+from_train_number = 1 # 몇번째 기차부터 조회할지  min = 1, max = 10
+to_train_number = 3  # 몇번째 기차까지 조회할지 min = from_train_number, max = 10
 
 #################################################################
 
@@ -141,7 +141,7 @@ def main() -> None:
             page.select_option("#dptTm", value=standard_time)
 
         page.locator("css=input[value='조회하기']").click()
-        wait_for_page_idle(page, timeout=5000)
+        wait_for_page_idle(page, timeout=1000)
 
         train_rows = page.locator(
             "#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr"
@@ -243,7 +243,6 @@ def main() -> None:
                     page.reload(wait_until="load")
                     wait_for_page_idle(page, timeout=5000)
 
-                page.wait_for_timeout(2000)
                 time.sleep(2)
 
             else:
