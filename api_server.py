@@ -1,17 +1,119 @@
 import asyncio
+import base64
+import json
 import multiprocessing as mp
+import os
+import pathlib
 import threading
 import time
 from collections import deque
 from typing import List, Optional, Tuple
 
-from fastapi import FastAPI, Form
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response
 
 import main_linux
 
 
 app = FastAPI(title="SRT Macro Controller")
+
+# 환경변수 암호화 관련
+ENV_FILE = pathlib.Path(".env.encrypted")
+KEY_FILE = pathlib.Path(".env.key")
+
+
+def get_encryption_key() -> bytes:
+    """암호화 키를 가져오거나 생성합니다."""
+    if KEY_FILE.exists():
+        return KEY_FILE.read_bytes()
+    # 새 키 생성 (기기 고유 정보 기반)
+    import platform
+    
+    machine_id = f"{platform.node()}{os.getcwd()}"
+    # PBKDF2를 사용하여 키 생성
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=b"srt_macro_salt",
+        iterations=100000,
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(machine_id.encode()))
+    KEY_FILE.write_bytes(key)
+    KEY_FILE.chmod(0o600)  # 소유자만 읽기/쓰기
+    return key
+
+
+def encrypt_env_vars(env_vars: dict[str, str]) -> bool:
+    """환경변수를 암호화하여 저장합니다."""
+    try:
+        key = get_encryption_key()
+        fernet = Fernet(key)
+        
+        env_json = json.dumps(env_vars, ensure_ascii=False)
+        encrypted = fernet.encrypt(env_json.encode())
+        
+        ENV_FILE.write_bytes(encrypted)
+        ENV_FILE.chmod(0o600)  # 소유자만 읽기/쓰기
+        return True
+    except Exception as e:
+        print(f"[env] 암호화 저장 실패: {e}")
+        return False
+
+
+def decrypt_env_vars() -> Optional[dict[str, str]]:
+    """암호화된 환경변수를 복호화하여 반환합니다."""
+    if not ENV_FILE.exists():
+        return None
+    try:
+        key = get_encryption_key()
+        fernet = Fernet(key)
+        
+        encrypted = ENV_FILE.read_bytes()
+        decrypted = fernet.decrypt(encrypted)
+        env_vars = json.loads(decrypted.decode())
+        return env_vars
+    except Exception as e:
+        print(f"[env] 복호화 실패: {e}")
+        return None
+
+
+def load_env_vars() -> dict[str, str]:
+    """환경변수를 로드합니다 (암호화된 파일 또는 시스템 환경변수)."""
+    env_vars = {}
+    
+    # 암호화된 파일에서 로드 시도
+    encrypted_vars = decrypt_env_vars()
+    if encrypted_vars:
+        env_vars.update(encrypted_vars)
+    
+    # 시스템 환경변수로 덮어쓰기 (우선순위 높음)
+    for key in ["MEMBER_NUMBER", "PASSWORD", "DISCORD_WEB_HOOK"]:
+        sys_val = os.getenv(key)
+        if sys_val:
+            env_vars[key] = sys_val
+    
+    return env_vars
+
+
+def check_env_vars() -> dict[str, bool]:
+    """필수 환경변수가 설정되어 있는지 확인합니다."""
+    env_vars = load_env_vars()
+    return {
+        "MEMBER_NUMBER": bool(env_vars.get("MEMBER_NUMBER")),
+        "PASSWORD": bool(env_vars.get("PASSWORD")),
+        "DISCORD_WEB_HOOK": bool(env_vars.get("DISCORD_WEB_HOOK")),
+    }
+
+
+def apply_env_vars_to_os() -> None:
+    """로드한 환경변수를 os.environ에 적용합니다."""
+    env_vars = load_env_vars()
+    for key, value in env_vars.items():
+        if value and key not in os.environ:
+            os.environ[key] = value
 
 
 # Simple process manager to run/stop the macro
@@ -216,6 +318,9 @@ STATE = MacroState()
 
 def run_macro(**kwargs) -> None:
     # Child process entrypoint: run the Playwright macro
+    # 환경변수 적용
+    apply_env_vars_to_os()
+    
     status_q: Optional[mp.Queue] = kwargs.pop("status_q", None)
     logs_q: Optional[mp.Queue] = kwargs.pop("logs_q", None)
     # Redirect prints to logs queue
@@ -279,6 +384,13 @@ def render_page(message: str = "") -> HTMLResponse:
     running = STATE.running
     pid = STATE.proc.pid if STATE.proc else None
     last_error = STATE.last_error
+    
+    # 환경변수 확인
+    env_check = check_env_vars()
+    env_warning = ""
+    if not all(env_check.values()):
+        missing = [k for k, v in env_check.items() if not v]
+        env_warning = f"⚠️ 환경변수가 설정되지 않았습니다: {', '.join(missing)}. '환경변수 입력' 버튼을 클릭하여 설정하세요."
 
     defaults = dict(
         arrival=main_linux.DEFAULT_ARRIVAL,
@@ -289,6 +401,19 @@ def render_page(message: str = "") -> HTMLResponse:
         from_train_number=main_linux.DEFAULT_FROM_TRAIN_NUMBER,
         to_train_number=main_linux.DEFAULT_TO_TRAIN_NUMBER,
     )
+    
+    # 저장된 환경변수 로드 (표시용, 실제 값은 마스킹)
+    saved_env = load_env_vars()
+    masked_env = {}
+    for key in ["MEMBER_NUMBER", "PASSWORD", "DISCORD_WEB_HOOK"]:
+        val = saved_env.get(key, "")
+        if val:
+            if key == "PASSWORD":
+                masked_env[key] = "*" * min(len(val), 8)
+            elif key == "MEMBER_NUMBER":
+                masked_env[key] = val[:3] + "*" * (len(val) - 3) if len(val) > 3 else "*" * len(val)
+            else:
+                masked_env[key] = val[:10] + "..." if len(val) > 10 else val
 
     html = f"""
     <!doctype html>
@@ -298,30 +423,197 @@ def render_page(message: str = "") -> HTMLResponse:
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>SRT Macro Controller</title>
         <style>
-          body {{ font-family: system-ui, -apple-system, sans-serif; margin: 2rem; }}
-          .card {{ max-width: 720px; padding: 1.25rem; border: 1px solid #e5e7eb; border-radius: 8px; }}
-          .row {{ display: grid; grid-template-columns: 1fr 2fr; gap: .75rem; margin-bottom: .75rem; align-items: center; }}
-          input, select {{ max-width: 10em; padding: .5rem .6rem; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; }}
-          .actions {{ display: flex; gap: .5rem; margin-top: 1rem; }}
-          button {{ padding: .6rem 1rem; border: 0; border-radius: 6px; cursor: pointer; }}
+          * {{ box-sizing: border-box; }}
+          body {{ 
+            font-family: system-ui, -apple-system, sans-serif; 
+            margin: 0;
+            padding: 1rem;
+            min-height: 100vh;
+            background: #f9fafb;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+          }}
+          .container {{
+            width: 100%;
+            max-width: 800px;
+            margin: 0 auto;
+          }}
+          h1 {{
+            margin: 1.5rem 0;
+            font-size: clamp(1.5rem, 4vw, 2rem);
+            text-align: center;
+            color: #111827;
+          }}
+          .card {{ 
+            background: white;
+            max-width: 100%;
+            padding: clamp(1rem, 3vw, 1.5rem);
+            border: 1px solid #e5e7eb; 
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 1rem;
+          }}
+          .row {{ 
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+          }}
+          .row label {{
+            font-weight: 500;
+            color: #374151;
+            font-size: clamp(0.875rem, 2vw, 0.9375rem);
+            margin-bottom: 0.25rem;
+          }}
+          input, select {{ 
+            width: 100%;
+            padding: clamp(0.625rem, 2vw, 0.75rem) clamp(0.75rem, 2vw, 0.875rem);
+            border: 1px solid #d1d5db; 
+            border-radius: 8px;
+            font-size: clamp(0.875rem, 2vw, 1rem);
+            transition: border-color 0.2s, box-shadow 0.2s;
+          }}
+          input:focus, select:focus {{
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+          }}
+          .actions {{ 
+            display: flex; 
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+            flex-wrap: wrap;
+          }}
+          button {{ 
+            flex: 1;
+            min-width: 120px;
+            padding: clamp(0.75rem, 2vw, 0.875rem) clamp(1rem, 3vw, 1.25rem);
+            border: 0; 
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: clamp(0.875rem, 2vw, 1rem);
+            font-weight: 500;
+            transition: opacity 0.2s, transform 0.1s;
+          }}
+          button:hover:not(:disabled) {{
+            opacity: 0.9;
+            transform: translateY(-1px);
+          }}
+          button:active:not(:disabled) {{
+            transform: translateY(0);
+          }}
+          button:disabled {{
+            opacity: 0.5;
+            cursor: not-allowed;
+          }}
           .primary {{ background:rgb(62, 66, 75); color: white; }}
           .danger {{ background: #dc2626; color: white; }}
-          .muted {{ color: #6b7280; }}
-          .status {{ margin-bottom: 1rem; }}
-          .msg {{ margin: .5rem 0; color: #374151; }}
+          .muted {{ 
+            color: #6b7280;
+            font-size: clamp(0.75rem, 2vw, 0.875rem);
+            text-align: center;
+            margin-top: 1rem;
+            padding: 0 1rem;
+          }}
+          .status {{ 
+            margin-bottom: 1.25rem;
+            padding: 0.75rem;
+            background: #f9fafb;
+            border-radius: 8px;
+            font-size: clamp(0.875rem, 2vw, 1rem);
+          }}
+          .msg {{ 
+            margin: 0.75rem 0;
+            padding: 0.75rem;
+            border-radius: 8px;
+            color: #374151;
+            font-size: clamp(0.875rem, 2vw, 0.9375rem);
+            line-height: 1.5;
+          }}
+          .msg[style*="color:#dc2626"] {{
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+          }}
           .running {{ color: #16a34a; font-weight: 600; }}
           .stopped {{ color: #9ca3af; font-weight: 600; }}
-          pre {{ background: #0b1020; color: #d1d5db; padding: .75rem; border-radius: 6px; height: 9em; max-width: 40em; overflow-y: auto; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; }}
+          h3 {{
+            margin: 1.5rem 0 0.75rem 0;
+            font-size: clamp(1rem, 3vw, 1.125rem);
+            color: #111827;
+          }}
+          pre {{
+            background: #0b1020; 
+            color: #d1d5db; 
+            padding: clamp(0.75rem, 2vw, 1rem);
+            border-radius: 8px;
+            height: clamp(200px, 30vh, 300px);
+            width: 100%;
+            overflow-y: auto; 
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-size: clamp(0.75rem, 1.5vw, 0.875rem);
+            line-height: 1.5;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+          }}
+          .env-btn {{
+            margin-bottom: 1rem;
+            background: #3b82f6;
+            color: white;
+          }}
+          .env-warning {{
+            background: #fef3c7;
+            border: 1px solid #fcd34d;
+            color: #92400e;
+            padding: 0.75rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            font-size: clamp(0.875rem, 2vw, 0.9375rem);
+          }}
+          .secondary {{
+            background: #6b7280;
+            color: white;
+          }}
+          @media (min-width: 640px) {{
+            body {{ padding: 2rem; }}
+            .row {{
+              flex-direction: row;
+              align-items: center;
+            }}
+            .row label {{
+              flex: 0 0 180px;
+              margin-bottom: 0;
+            }}
+            input, select {{
+              flex: 1;
+              max-width: none;
+            }}
+            .actions {{
+              flex-wrap: nowrap;
+            }}
+            button {{
+              flex: 0 1 auto;
+            }}
+            pre {{
+              height: 300px;
+            }}
+          }}
         </style>
       </head>
       <body>
-        <h1>SRT Macro Controller</h1>
-        <div class="card">
-          <div class="status">
-            상태: <span id="status-text" class="{('running' if running else 'stopped')}">{'동작 중' if running else '대기'}</span> <span id="status-pid">{('PID ' + str(pid) if running and pid else '')}</span>
-          </div>
-          {f'<div class=msg>{message}</div>' if message else ''}
-          {f'<div class=msg style="color:#dc2626;white-space:pre-wrap">{last_error}</div>' if last_error else ''}
+        <div class="container">
+          <h1>SRT Macro Controller</h1>
+          <div class="card">
+            <div class="actions">
+              <button class="primary env-btn" onclick="openEnvModal()">환경변수 입력</button>
+            </div>
+            {f'<div class="env-warning">{env_warning}</div>' if env_warning else ''}
+            <div class="status">
+              상태: <span id="status-text" class="{('running' if running else 'stopped')}">{'동작 중' if running else '대기'}</span> <span id="status-pid">{('PID ' + str(pid) if running and pid else '')}</span>
+            </div>
+            {f'<div class=msg>{message}</div>' if message else ''}
+            {f'<div class=msg style="color:#dc2626;white-space:pre-wrap">{last_error}</div>' if last_error else ''}
           <form method="post" action="/start">
             <div class="row"><label>출발지</label><input name="arrival" value="{defaults['arrival']}" required></div>
             <div class="row"><label>도착지</label><input name="departure" value="{defaults['departure']}" required></div>
@@ -345,10 +637,26 @@ def render_page(message: str = "") -> HTMLResponse:
               <button class="danger" type="submit" {'disabled' if not running else ''}>정지</button>
             </div>
           </form>
-          <h3>실시간 로그</h3>
-          <pre id="logbox">[logs] 초기화 중...</pre>
+            <h3>실시간 로그</h3>
+            <pre id="logbox">[logs] 초기화 중...</pre>
+          </div>
+          <p class="muted">환경변수는 암호화되어 저장됩니다. MEMBER_NUMBER, PASSWORD, DISCORD_WEB_HOOK 변수가 필요합니다.</p>
         </div>
-        <p class="muted">.env에 MEMBER_NUMBER, PASSWORD가 설정되어 있어야 합니다.</p>
+        
+        <script>
+          function openEnvModal() {{
+            var width = 600;
+            var height = 650;
+            var left = (screen.width - width) / 2;
+            var top = (screen.height - height) / 2;
+            var features = 'width=' + width + ',height=' + height + ',left=' + left + ',top=' + top + ',resizable=yes,scrollbars=yes';
+            var popup = window.open('/env/form', 'envModal', features);
+            if(!popup || popup.closed || typeof popup.closed == 'undefined') {{
+              alert('팝업이 차단되었습니다. 브라우저 설정에서 팝업을 허용해주세요.');
+            }}
+          }}
+        </script>
+        
         <script>
           // 인라인으로 즉시 실행 (캐시 문제 방지)
           (function(){{
@@ -421,6 +729,8 @@ def render_page(message: str = "") -> HTMLResponse:
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
+    # 환경변수 로드 및 적용
+    apply_env_vars_to_os()
     try:
         STATE._append_log("[ui] 페이지 로드")
     except Exception:
@@ -438,6 +748,14 @@ def start(
     from_train_number: int = Form(1),
     to_train_number: int = Form(1),
 ):
+    # 환경변수 적용
+    apply_env_vars_to_os()
+    
+    # 환경변수 확인
+    env_check = check_env_vars()
+    if not env_check.get("MEMBER_NUMBER") or not env_check.get("PASSWORD"):
+        return render_page("⚠️ 환경변수가 설정되지 않았습니다. '환경변수 입력' 버튼을 클릭하여 설정하세요.")
+    
     # Basic input validation
     if from_train_number > to_train_number:
         return render_page("조회 시작 순번은 종료 순번보다 클 수 없습니다.")
@@ -483,6 +801,241 @@ def stop():
         return render_page("실행 중이 아닙니다.")
     STATE.stop()
     return render_page("정지했습니다.")
+
+
+@app.get("/env/form", response_class=HTMLResponse)
+def env_form() -> HTMLResponse:
+    """환경변수 입력 폼 페이지"""
+    saved_env = load_env_vars()
+    masked_env = {}
+    for key in ["MEMBER_NUMBER", "PASSWORD", "DISCORD_WEB_HOOK"]:
+        val = saved_env.get(key, "")
+        if val:
+            if key == "PASSWORD":
+                masked_env[key] = "*" * min(len(val), 8)
+            elif key == "MEMBER_NUMBER":
+                masked_env[key] = val[:3] + "*" * (len(val) - 3) if len(val) > 3 else "*" * len(val)
+            else:
+                masked_env[key] = val[:10] + "..." if len(val) > 10 else val
+    
+    html = f"""
+    <!doctype html>
+    <html lang=ko>
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>환경변수 입력</title>
+        <style>
+          * {{ box-sizing: border-box; }}
+          body {{ 
+            font-family: system-ui, -apple-system, sans-serif; 
+            margin: 0;
+            padding: 1.5rem;
+            background: #f9fafb;
+            min-height: 100vh;
+          }}
+          .container {{
+            max-width: 500px;
+            margin: 0 auto;
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+          }}
+          h2 {{
+            margin: 0 0 1.5rem 0;
+            font-size: 1.5rem;
+            color: #111827;
+          }}
+          .row {{
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+          }}
+          label {{
+            font-weight: 500;
+            color: #374151;
+            font-size: 0.9375rem;
+          }}
+          input {{
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+          }}
+          input:focus {{
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+          }}
+          .actions {{
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+          }}
+          button {{
+            flex: 1;
+            padding: 0.875rem 1.25rem;
+            border: 0;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: opacity 0.2s;
+          }}
+          button:hover {{
+            opacity: 0.9;
+          }}
+          .primary {{
+            background: rgb(62, 66, 75);
+            color: white;
+          }}
+          .secondary {{
+            background: #6b7280;
+            color: white;
+          }}
+          .msg {{
+            margin: 0.75rem 0;
+            padding: 0.75rem;
+            border-radius: 8px;
+            font-size: 0.9375rem;
+            line-height: 1.5;
+            display: none;
+          }}
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h2>환경변수 입력</h2>
+          <form id="envForm" onsubmit="saveEnvVars(event)">
+            <div class="row">
+              <label>회원번호 (MEMBER_NUMBER)</label>
+              <input type="text" id="member_number" name="member_number" value="{masked_env.get('MEMBER_NUMBER', '')}" placeholder="회원번호를 입력하세요" required>
+            </div>
+            <div class="row">
+              <label>비밀번호 (PASSWORD)</label>
+              <input type="password" id="password" name="password" placeholder="비밀번호를 입력하세요" required>
+            </div>
+            <div class="row">
+              <label>Discord Webhook (DISCORD_WEB_HOOK)</label>
+              <input type="url" id="discord_webhook" name="discord_webhook" value="{masked_env.get('DISCORD_WEB_HOOK', '')}" placeholder="Discord Webhook URL을 입력하세요">
+            </div>
+            <div class="actions">
+              <button type="submit" class="primary">저장</button>
+              <button type="button" class="secondary" onclick="window.close()">취소</button>
+            </div>
+            <div id="envMsg" class="msg"></div>
+          </form>
+        </div>
+        <script>
+          function saveEnvVars(event) {{
+            event.preventDefault();
+            var formData = new FormData(event.target);
+            var data = {{
+              member_number: formData.get('member_number'),
+              password: formData.get('password'),
+              discord_webhook: formData.get('discord_webhook') || ''
+            }};
+            fetch('/env/save', {{
+              method: 'POST',
+              headers: {{ 'Content-Type': 'application/json' }},
+              body: JSON.stringify(data)
+            }})
+            .then(function(res) {{ return res.json(); }})
+            .then(function(result) {{
+              var msgEl = document.getElementById('envMsg');
+              msgEl.style.display = 'block';
+              if(result.success) {{
+                msgEl.textContent = '환경변수가 저장되었습니다.';
+                msgEl.style.color = '#16a34a';
+                msgEl.style.background = '#f0fdf4';
+                msgEl.style.border = '1px solid #86efac';
+                setTimeout(function() {{
+                  if(window.opener) {{
+                    window.opener.location.reload();
+                  }}
+                  window.close();
+                }}, 1500);
+              }} else {{
+                msgEl.textContent = '저장 실패: ' + (result.message || '알 수 없는 오류');
+                msgEl.style.color = '#dc2626';
+                msgEl.style.background = '#fef2f2';
+                msgEl.style.border = '1px solid #fecaca';
+              }}
+            }})
+            .catch(function(err) {{
+              var msgEl = document.getElementById('envMsg');
+              msgEl.style.display = 'block';
+              msgEl.textContent = '저장 실패: ' + err.message;
+              msgEl.style.color = '#dc2626';
+              msgEl.style.background = '#fef2f2';
+              msgEl.style.border = '1px solid #fecaca';
+            }});
+          }}
+        </script>
+      </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
+
+
+@app.get("/env/check")
+def check_env():
+    """환경변수 확인 API"""
+    check_result = check_env_vars()
+    return JSONResponse({
+        "success": all(check_result.values()),
+        "check": check_result,
+    })
+
+
+@app.post("/env/save")
+async def save_env(request: Request):
+    """환경변수 저장 API"""
+    try:
+        data = await request.json()
+        env_vars = {
+            "MEMBER_NUMBER": data.get("member_number", "").strip(),
+            "PASSWORD": data.get("password", "").strip(),
+            "DISCORD_WEB_HOOK": data.get("discord_webhook", "").strip(),
+        }
+        
+        # 필수 필드 검증
+        if not env_vars["MEMBER_NUMBER"]:
+            return JSONResponse({
+                "success": False,
+                "message": "회원번호는 필수입니다."
+            }, status_code=400)
+        
+        if not env_vars["PASSWORD"]:
+            return JSONResponse({
+                "success": False,
+                "message": "비밀번호는 필수입니다."
+            }, status_code=400)
+        
+        # 암호화하여 저장
+        if encrypt_env_vars(env_vars):
+            # 저장 후 os.environ에도 적용
+            for key, value in env_vars.items():
+                if value:
+                    os.environ[key] = value
+            return JSONResponse({
+                "success": True,
+                "message": "환경변수가 저장되었습니다."
+            })
+        else:
+            return JSONResponse({
+                "success": False,
+                "message": "저장에 실패했습니다."
+            }, status_code=500)
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "message": f"오류 발생: {str(e)}"
+        }, status_code=500)
 
 
 @app.get("/status")

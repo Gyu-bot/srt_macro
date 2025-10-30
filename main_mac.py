@@ -51,7 +51,7 @@ print("--------------- Start SRT Macro ---------------")
 
 # webdriver 파일의 경로 입력
 # 같은 디렉토리에 있기 때문에 chromedriver.exe파일 이름만 써줌
-print("selenium version : ", get_selenium_version())
+# print("selenium version : ", get_selenium_version())
 
 # selenium 버전에 따른 webdriver 분기
 # v1, v2, v3 = get_selenium_version().split(".")

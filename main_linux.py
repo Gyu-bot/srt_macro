@@ -321,7 +321,6 @@ def main(
 
                 page.wait_for_timeout(2000)
                 time.sleep(2)
-
             else:
                 time.sleep(1000)
                 break
