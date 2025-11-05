@@ -130,7 +130,30 @@ class MacroState:
 
     @property
     def running(self) -> bool:
-        return self.proc is not None and self.proc.is_alive()
+        if self.proc is None:
+            return False
+        # 프로세스가 종료되었는지 확인
+        if not self.proc.is_alive():
+            # 프로세스가 종료되었으면 상태 정리
+            # 상태 큐에서 남은 메시지 확인 (에러 메시지 등)
+            if self._status_q is not None:
+                try:
+                    while True:
+                        msg = self._status_q.get_nowait()
+                        if isinstance(msg, dict):
+                            status = msg.get("status")
+                            if status == "error":
+                                error_msg = msg.get("message") or "실행 중 오류 발생"
+                                self.last_error = self._clean_error_message(error_msg)
+                except Exception:
+                    pass
+            # 상태 정리
+            self.proc = None
+            self.started_at = None
+            self._status_q = None
+            self._logs_q = None
+            return False
+        return True
 
     def start(self, **kwargs) -> bool:
         if self.running:
@@ -171,7 +194,9 @@ class MacroState:
         if isinstance(msg, dict):
             status = msg.get("status")
             if status == "error":
-                self.last_error = msg.get("message") or "시작 중 알 수 없는 오류"
+                error_msg = msg.get("message") or "시작 중 알 수 없는 오류"
+                # traceback 제거
+                self.last_error = self._clean_error_message(error_msg)
                 # Ensure termination
                 if self.proc and self.proc.is_alive():
                     self.proc.terminate()
@@ -212,6 +237,33 @@ class MacroState:
 
     def refresh(self) -> None:
         """Drain status queue to capture late errors/finish events."""
+        # 프로세스가 종료되었는지 먼저 확인
+        if self.proc is not None and not self.proc.is_alive():
+            # 프로세스가 종료되었지만 상태가 정리되지 않은 경우
+            if self._status_q is not None or self._logs_q is not None:
+                # 상태 큐에서 남은 메시지 확인
+                q = self._status_q
+                if q is not None:
+                    try:
+                        while True:
+                            msg = q.get_nowait()
+                            if isinstance(msg, dict):
+                                status = msg.get("status")
+                                if status == "error":
+                                    error_msg = msg.get("message") or "실행 중 오류 발생"
+                                    self.last_error = self._clean_error_message(error_msg)
+                                elif status == "finished":
+                                    # 이미 종료된 상태
+                                    pass
+                    except Exception:
+                        pass
+                # 상태 정리
+                self.proc = None
+                self.started_at = None
+                self._status_q = None
+                self._logs_q = None
+                return
+        
         q = self._status_q
         if q is None:
             return
@@ -222,7 +274,9 @@ class MacroState:
                     continue
                 status = msg.get("status")
                 if status == "error":
-                    self.last_error = msg.get("message") or "실행 중 오류 발생"
+                    error_msg = msg.get("message") or "실행 중 오류 발생"
+                    # traceback 제거 (사용자 친화적인 메시지만 표시)
+                    self.last_error = self._clean_error_message(error_msg)
                     # Ensure stopped state
                     if self.proc and self.proc.is_alive():
                         self.proc.terminate()
@@ -235,18 +289,41 @@ class MacroState:
                     self._status_q = None
                     self._logs_q = None
                 elif status == "finished":
-                    # Treat as completed run
+                    # Treat as completed run - 프로세스 종료 처리
                     if self.proc and self.proc.is_alive():
-                        # If it reports finished but still alive, ignore
-                        pass
-                    else:
-                        self.proc = None
-                        self.started_at = None
-                        self._status_q = None
-                        self._logs_q = None
+                        # 프로세스가 아직 살아있으면 종료
+                        self.proc.terminate()
+                        try:
+                            self.proc.join(timeout=3)
+                        except Exception:
+                            pass
+                    self.proc = None
+                    self.started_at = None
+                    self._status_q = None
+                    self._logs_q = None
         except Exception:
             # Empty queue or other non-critical error
             pass
+    
+    def _clean_error_message(self, error_msg: str) -> str:
+        """에러 메시지에서 traceback을 제거하고 사용자 친화적인 메시지만 반환합니다."""
+        # traceback이 포함된 경우 첫 번째 줄만 반환
+        lines = error_msg.split('\n')
+        # "Traceback"으로 시작하는 줄을 찾아서 그 이전까지만 반환
+        cleaned_lines = []
+        for line in lines:
+            if line.strip().startswith('Traceback'):
+                break
+            if line.strip().startswith('File "'):
+                break
+            cleaned_lines.append(line)
+        
+        # 마지막 줄이 비어있으면 제거
+        while cleaned_lines and not cleaned_lines[-1].strip():
+            cleaned_lines.pop()
+        
+        result = '\n'.join(cleaned_lines).strip()
+        return result if result else "실행 중 오류가 발생했습니다."
 
     # ----- Logging (SSE broadcast) -----
     def _start_log_pump(self) -> None:
@@ -365,14 +442,15 @@ def run_macro(**kwargs) -> None:
         if status_q is not None:
             status_q.put({"status": "finished"})
     except Exception as e:
+        # traceback 없이 에러 메시지만 전달
+        error_message = str(e)
         if status_q is not None:
-            import traceback
-
-            tb = traceback.format_exc()
-            status_q.put({"status": "error", "message": f"{e}\n{tb}"})
+            status_q.put({"status": "error", "message": error_message})
+            # 에러 발생 시 finished 상태도 전달하여 종료 상태를 명확히 함
+            status_q.put({"status": "finished"})
         if logs_q is not None:
             try:
-                logs_q.put(f"[ERROR] {e}\n{tb}")
+                logs_q.put(f"[ERROR] {error_message}")
             except Exception:
                 pass
         # Exit child process
@@ -558,7 +636,6 @@ def render_page(message: str = "") -> HTMLResponse:
             font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
           }}
           .env-btn {{
-            margin-bottom: 1rem;
             background: #3b82f6;
             color: white;
           }}
@@ -605,16 +682,13 @@ def render_page(message: str = "") -> HTMLResponse:
         <div class="container">
           <h1>SRT Macro Controller</h1>
           <div class="card">
-            <div class="actions">
-              <button class="primary env-btn" onclick="openEnvModal()">환경변수 입력</button>
-            </div>
             {f'<div class="env-warning">{env_warning}</div>' if env_warning else ''}
             <div class="status">
               상태: <span id="status-text" class="{('running' if running else 'stopped')}">{'동작 중' if running else '대기'}</span> <span id="status-pid">{('PID ' + str(pid) if running and pid else '')}</span>
             </div>
             {f'<div class=msg>{message}</div>' if message else ''}
             {f'<div class=msg style="color:#dc2626;white-space:pre-wrap">{last_error}</div>' if last_error else ''}
-          <form method="post" action="/start">
+          <form id="startForm" method="post" action="/start">
             <div class="row"><label>출발지</label><input name="arrival" value="{defaults['arrival']}" required></div>
             <div class="row"><label>도착지</label><input name="departure" value="{defaults['departure']}" required></div>
             <div class="row"><label>기준 날짜</label><input name="standard_date" value="{defaults['standard_date']}" pattern="\\d{{8}}" required></div>
@@ -629,14 +703,12 @@ def render_page(message: str = "") -> HTMLResponse:
             <div class="row"><label>조회 시작 열차 순번</label><input type="number" name="from_train_number" value="{defaults['from_train_number']}" min="1" max="10" required></div>
             <div class="row"><label>조회 종료 열차 순번</label><input type="number" name="to_train_number" value="{defaults['to_train_number']}" min="1" max="10" required></div>
             <div class="actions">
-              <button class="primary" type="submit" {'disabled' if running else ''}>시작</button>
+              <button class="primary" type="submit" form="startForm" {'disabled' if running else ''}>시작</button>
+              <button class="danger" type="submit" form="stopForm" {'disabled' if not running else ''}>정지</button>
+              <button class="primary env-btn" onclick="openEnvModal()">환경변수 입력</button>
             </div>
           </form>
-          <form method="post" action="/stop">
-            <div class="actions">
-              <button class="danger" type="submit" {'disabled' if not running else ''}>정지</button>
-            </div>
-          </form>
+          <form id="stopForm" method="post" action="/stop" style="display:none;"></form>
             <h3>실시간 로그</h3>
             <pre id="logbox">[logs] 초기화 중...</pre>
           </div>
