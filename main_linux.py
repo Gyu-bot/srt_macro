@@ -151,8 +151,7 @@ def open_reservation_page(url: str) -> None:
 
 ############# 자동 예매 원하는 설정으로 변경 ##############
 
-member_number = os.getenv("MEMBER_NUMBER")  # 회원번호
-password = os.getenv("PASSWORD")  # 비밀번호
+# 환경변수는 main() 함수 내에서 읽도록 변경 (모듈 레벨에서 읽지 않음)
 DEFAULT_ARRIVAL = "동대구"
 DEFAULT_DEPARTURE = "동탄"
 DEFAULT_STANDARD_DATE = "20251024"  # 기준날짜 ex) 20221101
@@ -234,13 +233,13 @@ def launch_browser(playwright: Playwright) -> tuple[Browser, BrowserContext]:
 
 
 def main(
-    arrival: str = DEFAULT_ARRIVAL,
-    departure: str = DEFAULT_DEPARTURE,
-    from_train_number: int = DEFAULT_FROM_TRAIN_NUMBER,
-    to_train_number: int = DEFAULT_TO_TRAIN_NUMBER,
-    standard_date: str = DEFAULT_STANDARD_DATE,
-    standard_time: str = DEFAULT_STANDARD_TIME,
-    seat_types: str = DEFAULT_SEAT_TYPES,
+    arrival: Optional[str] = None,
+    departure: Optional[str] = None,
+    from_train_number: Optional[int] = None,
+    to_train_number: Optional[int] = None,
+    standard_date: Optional[str] = None,
+    standard_time: Optional[str] = None,
+    seat_types: Optional[str] = None,
     status_q: Optional[object] = None,
     logs_q: Optional[object] = None,
 ) -> None:
@@ -249,11 +248,35 @@ def main(
     _status_q = status_q
     _logs_q = logs_q
     
+    # 파라미터가 None이면 기본값 사용 (하지만 api_server.py에서 항상 전달하므로 None이면 오류)
+    if arrival is None:
+        arrival = DEFAULT_ARRIVAL
+    if departure is None:
+        departure = DEFAULT_DEPARTURE
+    if from_train_number is None:
+        from_train_number = DEFAULT_FROM_TRAIN_NUMBER
+    if to_train_number is None:
+        to_train_number = DEFAULT_TO_TRAIN_NUMBER
+    if standard_date is None:
+        standard_date = DEFAULT_STANDARD_DATE
+    if standard_time is None:
+        standard_time = DEFAULT_STANDARD_TIME
+    if seat_types is None:
+        seat_types = DEFAULT_SEAT_TYPES
+    
     reserved = False
 
     log_info("--------------- Start SRT Macro ---------------")
     
-    # 환경변수 확인
+    # 전달받은 파라미터 로깅 (디버깅용)
+    log_info(f"파라미터 확인 - arrival: {arrival}, departure: {departure}, standard_date: {standard_date}, standard_time: {standard_time}, seat_types: {seat_types}, from_train_number: {from_train_number}, to_train_number: {to_train_number}")
+    
+    # 환경변수 로드 (main() 함수 내에서 읽도록 변경)
+    member_number = os.getenv("MEMBER_NUMBER")
+    password = os.getenv("PASSWORD")
+    
+    # 환경변수 확인 및 디버깅
+    log_info(f"환경변수 확인 - MEMBER_NUMBER: {'설정됨' if member_number else '없음'}, PASSWORD: {'설정됨' if password else '없음'}")
     if not member_number or not password:
         log_error("환경변수 MEMBER_NUMBER 또는 PASSWORD가 설정되지 않았습니다.", exit_on_error=True)
 
@@ -349,13 +372,28 @@ def main(
             query_button_selector = "css=input[value='조회하기']"
             try:
                 has_element(page, query_button_selector, required=True)
+                log_info("조회 버튼 클릭 중...")
                 page.locator(query_button_selector).click()
-                wait_for_page_idle(page, timeout=5000)
+                # 조회 결과가 나타날 때까지 대기 (더 긴 타임아웃)
+                wait_for_page_idle(page, timeout=10000)
             except Exception as e:
                 log_error("조회 버튼 클릭 실패", error=e, exit_on_error=True)
 
-            # 결과 테이블 존재 확인
+            # 결과 테이블 존재 확인 (명시적으로 대기)
             result_table_selector = "#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody"
+            log_info("결과 테이블 대기 중...")
+            try:
+                # 요소가 나타날 때까지 명시적으로 대기
+                page.wait_for_selector(result_table_selector, timeout=15000)
+                log_info("결과 테이블 발견됨")
+            except PlaywrightTimeoutError:
+                # 페이지 상태 확인을 위한 디버깅 정보
+                current_url = page.url
+                page_title = page.title()
+                log_error(
+                    f"결과 테이블을 찾을 수 없습니다. URL: {current_url}, Title: {page_title}",
+                    exit_on_error=True
+                )
             has_element(page, result_table_selector, required=True)
 
             while True:

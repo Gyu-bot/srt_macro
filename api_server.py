@@ -112,8 +112,8 @@ def apply_env_vars_to_os() -> None:
     """로드한 환경변수를 os.environ에 적용합니다."""
     env_vars = load_env_vars()
     for key, value in env_vars.items():
-        if value and key not in os.environ:
-            os.environ[key] = value
+        if value:
+            os.environ[key] = value  # 기존 값이 있어도 덮어쓰기
 
 
 # Simple process manager to run/stop the macro
@@ -127,6 +127,8 @@ class MacroState:
         self._log_thread: Optional[threading.Thread] = None
         self._log_buffer: deque[str] = deque(maxlen=500)
         self._listeners: List[Tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = []
+        # 현재 실행 중인 파라미터 저장
+        self.current_params: Optional[dict] = None
 
     @property
     def running(self) -> bool:
@@ -152,6 +154,7 @@ class MacroState:
             self.started_at = None
             self._status_q = None
             self._logs_q = None
+            self.current_params = None
             return False
         return True
 
@@ -160,6 +163,16 @@ class MacroState:
             return False
         # Reset previous error
         self.last_error = None
+        # 현재 실행 중인 파라미터 저장 (UI 표시용)
+        self.current_params = {
+            "arrival": kwargs.get("arrival"),
+            "departure": kwargs.get("departure"),
+            "from_train_number": kwargs.get("from_train_number"),
+            "to_train_number": kwargs.get("to_train_number"),
+            "standard_date": kwargs.get("standard_date"),
+            "standard_time": kwargs.get("standard_time"),
+            "seat_types": kwargs.get("seat_types"),
+        }
         # Queues for status and logs
         status_q: mp.Queue = mp.Queue()
         logs_q: mp.Queue = mp.Queue()
@@ -208,6 +221,7 @@ class MacroState:
                 self.started_at = None
                 self._status_q = None
                 self._logs_q = None
+                self.current_params = None
                 return False
             if status == "finished":
                 # Macro finished immediately; not considered running
@@ -216,6 +230,7 @@ class MacroState:
                 self.started_at = None
                 self._status_q = None
                 self._logs_q = None
+                self.current_params = None
                 return False
         return True
 
@@ -232,6 +247,7 @@ class MacroState:
         self.started_at = None
         self._status_q = None
         self._logs_q = None
+        self.current_params = None
         # Allow log thread to end naturally
         return True
 
@@ -262,6 +278,7 @@ class MacroState:
                 self.started_at = None
                 self._status_q = None
                 self._logs_q = None
+                self.current_params = None
                 return
         
         q = self._status_q
@@ -288,6 +305,7 @@ class MacroState:
                     self.started_at = None
                     self._status_q = None
                     self._logs_q = None
+                    self.current_params = None
                 elif status == "finished":
                     # Treat as completed run - 프로세스 종료 처리
                     if self.proc and self.proc.is_alive():
@@ -301,6 +319,7 @@ class MacroState:
                     self.started_at = None
                     self._status_q = None
                     self._logs_q = None
+                    self.current_params = None
         except Exception:
             # Empty queue or other non-critical error
             pass
@@ -398,8 +417,22 @@ def run_macro(**kwargs) -> None:
     # 환경변수 적용
     apply_env_vars_to_os()
     
+    # 파라미터를 먼저 추출 (pop 전에 추출하여 안전하게 처리)
+    arrival = kwargs.pop("arrival", None)
+    departure = kwargs.pop("departure", None)
+    from_train_number = kwargs.pop("from_train_number", None)
+    to_train_number = kwargs.pop("to_train_number", None)
+    standard_date = kwargs.pop("standard_date", None)
+    standard_time = kwargs.pop("standard_time", None)
+    seat_types = kwargs.pop("seat_types", None)
     status_q: Optional[mp.Queue] = kwargs.pop("status_q", None)
     logs_q: Optional[mp.Queue] = kwargs.pop("logs_q", None)
+    
+    # 예상치 못한 키가 있는지 확인 (디버깅용)
+    if kwargs:
+        import sys
+        print(f"[WARNING] 예상치 못한 파라미터: {list(kwargs.keys())}", file=sys.stderr)
+    
     # Redirect prints to logs queue
     import sys
 
@@ -435,10 +468,24 @@ def run_macro(**kwargs) -> None:
         sys.stderr = _StreamToQueue(logs_q)  # type: ignore
         try:
             logs_q.put("[macro] starting...")
+            # 전달받은 파라미터 로깅 (디버깅용)
+            params_str = f"arrival={arrival}, departure={departure}, standard_date={standard_date}, standard_time={standard_time}, seat_types={seat_types}, from_train_number={from_train_number}, to_train_number={to_train_number}"
+            logs_q.put(f"[macro] 파라미터: {params_str}")
         except Exception:
             pass
     try:
-        main_linux.main(**kwargs)
+        # 명시적으로 파라미터 전달
+        main_linux.main(
+            arrival=arrival,
+            departure=departure,
+            from_train_number=from_train_number,
+            to_train_number=to_train_number,
+            standard_date=standard_date,
+            standard_time=standard_time,
+            seat_types=seat_types,
+            status_q=status_q,
+            logs_q=logs_q,
+        )
         if status_q is not None:
             status_q.put({"status": "finished"})
     except Exception as e:
@@ -457,7 +504,7 @@ def run_macro(**kwargs) -> None:
         return
 
 
-def render_page(message: str = "") -> HTMLResponse:
+def render_page(message: str = "", **form_params) -> HTMLResponse:
     STATE.refresh()
     running = STATE.running
     pid = STATE.proc.pid if STATE.proc else None
@@ -470,6 +517,7 @@ def render_page(message: str = "") -> HTMLResponse:
         missing = [k for k, v in env_check.items() if not v]
         env_warning = f"⚠️ 환경변수가 설정되지 않았습니다: {', '.join(missing)}. '환경변수 입력' 버튼을 클릭하여 설정하세요."
 
+    # 기본값 설정: 전달받은 파라미터 > 실행 중인 파라미터 > 기본값
     defaults = dict(
         arrival=main_linux.DEFAULT_ARRIVAL,
         departure=main_linux.DEFAULT_DEPARTURE,
@@ -479,6 +527,14 @@ def render_page(message: str = "") -> HTMLResponse:
         from_train_number=main_linux.DEFAULT_FROM_TRAIN_NUMBER,
         to_train_number=main_linux.DEFAULT_TO_TRAIN_NUMBER,
     )
+    
+    # 실행 중인 파라미터가 있으면 사용
+    if STATE.current_params:
+        defaults.update(STATE.current_params)
+    
+    # 전달받은 파라미터가 있으면 우선 사용
+    if form_params:
+        defaults.update({k: v for k, v in form_params.items() if v is not None})
     
     # 저장된 환경변수 로드 (표시용, 실제 값은 마스킹)
     saved_env = load_env_vars()
@@ -731,67 +787,119 @@ def render_page(message: str = "") -> HTMLResponse:
         
         <script>
           // 인라인으로 즉시 실행 (캐시 문제 방지)
-          (function(){{
-            var logEl = document.getElementById('logbox');
-            var statusTextEl = document.getElementById('status-text');
-            var statusPidEl = document.getElementById('status-pid');
-            if(!logEl) {{ console.error('[logs] logbox not found'); return; }}
-            function append(line){{
-              try{{ logEl.textContent += (line + "\\n"); logEl.scrollTop = logEl.scrollHeight; }}
-              catch(e){{ console.error('append failed', e); }}
-            }}
-            function updateStatus(running, pid){{
-              if(!statusTextEl) return;
-              if(running){{
-                statusTextEl.textContent = '동작 중';
-                statusTextEl.className = 'running';
-                if(statusPidEl && pid) statusPidEl.textContent = 'PID ' + pid;
-              }}else{{
-                statusTextEl.textContent = '대기';
-                statusTextEl.className = 'stopped';
-                if(statusPidEl) statusPidEl.textContent = '';
+          // 중복 실행 방지: 이미 초기화되었는지 확인
+          if(window.logSystemInitialized) {{
+            console.log('[logs] 이미 초기화됨, 스킵');
+          }} else {{
+            window.logSystemInitialized = true;
+            (function(){{
+              var logEl = document.getElementById('logbox');
+              var statusTextEl = document.getElementById('status-text');
+              var statusPidEl = document.getElementById('status-pid');
+              if(!logEl) {{ console.error('[logs] logbox not found'); return; }}
+              
+              var seenLines = new Set(); // 중복 방지를 위한 Set
+              
+              function append(line){{
+                // 중복 체크: 같은 라인이 연속으로 오면 무시
+                if(seenLines.has(line)) {{
+                  return;
+                }}
+                seenLines.add(line);
+                // Set 크기 제한 (메모리 관리)
+                if(seenLines.size > 1000) {{
+                  var firstKey = seenLines.values().next().value;
+                  seenLines.delete(firstKey);
+                }}
+                try{{ logEl.textContent += (line + "\\n"); logEl.scrollTop = logEl.scrollHeight; }}
+                catch(e){{ console.error('append failed', e); }}
               }}
-            }}
-            var es; var pollTimer = null; var established = false;
-            function startPoll(){{
-              if(pollTimer) return;
-              append('[logs] 폴링 시작');
-              var lastLen = 0;
-              pollTimer = setInterval(function(){{
-                fetch('/logs.json').then(function(res){{ return res.json(); }}).then(function(j){{
-                  var lines = (j && j.lines) || [];
-                  if(lastLen > lines.length) lastLen = 0;
-                  for(var i=lastLen;i<lines.length;i++) append(lines[i]);
-                  lastLen = lines.length;
-                }}).catch(function(err){{ console.warn('poll failed', err); }});
-                // 상태도 폴링으로 업데이트
-                fetch('/status').then(function(res){{ return res.json(); }}).then(function(s){{
-                  updateStatus(s.running, s.pid);
-                }}).catch(function(err){{ console.warn('status poll failed', err); }});
+              
+              function updateStatus(running, pid){{
+                if(!statusTextEl) return;
+                if(running){{
+                  statusTextEl.textContent = '동작 중';
+                  statusTextEl.className = 'running';
+                  if(statusPidEl && pid) statusPidEl.textContent = 'PID ' + pid;
+                }}else{{
+                  statusTextEl.textContent = '대기';
+                  statusTextEl.className = 'stopped';
+                  if(statusPidEl) statusPidEl.textContent = '';
+                }}
+              }}
+              
+              var es = null; var pollTimer = null; var established = false; var usingSSE = false;
+              
+              function stopPoll(){{
+                if(pollTimer) {{
+                  clearInterval(pollTimer);
+                  pollTimer = null;
+                }}
+              }}
+              
+              function startPoll(){{
+                if(pollTimer || usingSSE) return;
+                append('[logs] 폴링 시작');
+                var lastLen = 0;
+                pollTimer = setInterval(function(){{
+                  fetch('/logs.json').then(function(res){{ return res.json(); }}).then(function(j){{
+                    var lines = (j && j.lines) || [];
+                    if(lastLen > lines.length) lastLen = 0;
+                    for(var i=lastLen;i<lines.length;i++) {{
+                      var line = lines[i];
+                      if(line && !seenLines.has(line)) {{
+                        append(line);
+                      }}
+                    }}
+                    lastLen = lines.length;
+                  }}).catch(function(err){{ console.warn('poll failed', err); }});
+                  // 상태도 폴링으로 업데이트
+                  fetch('/status').then(function(res){{ return res.json(); }}).then(function(s){{
+                    updateStatus(s.running, s.pid);
+                  }}).catch(function(err){{ console.warn('status poll failed', err); }});
+                }}, 1500);
+              }}
+              
+              // 즉시 폴링 시작
+              startPoll();
+              
+              var fallbackTimer = setTimeout(function(){{
+                if(!established){{
+                  append('[logs] SSE 지연 - 폴백 유지');
+                  try{{ if(es) es.close(); }}catch(e){{}}
+                }}
               }}, 1500);
-            }}
-            // 즉시 폴링 시작
-            startPoll();
-            var fallbackTimer = setTimeout(function(){{
-              if(!established){{
-                append('[logs] SSE 지연 - 폴백 유지');
-                try{{ es && es.close(); }}catch(e){{}}
+              
+              try{{
+                es = new EventSource('/logs');
+                es.onopen = function(){{
+                  established = true; 
+                  usingSSE = true;
+                  clearTimeout(fallbackTimer); 
+                  stopPoll(); // 폴링 먼저 중지
+                  append('[logs] SSE 연결됨');
+                }};
+                es.onmessage = function(e){{
+                  established = true; 
+                  clearTimeout(fallbackTimer);
+                  var line = e.data;
+                  if(line && line.trim() && !line.startsWith(':')) {{
+                    append(line);
+                  }}
+                }};
+                es.onerror = function(){{
+                  usingSSE = false;
+                  append('[logs] SSE 연결 끊김 - 폴링으로 계속');
+                  try{{ if(es) es.close(); }}catch(e){{}}
+                  es = null;
+                  if(!pollTimer) startPoll();
+                }};
+              }}catch(e){{ 
+                console.error('SSE init failed', e); 
+                if(!pollTimer) startPoll(); 
               }}
-            }}, 1500);
-            try{{
-              es = new EventSource('/logs');
-              es.onopen = function(){{
-                established = true; clearTimeout(fallbackTimer); append('[logs] SSE 연결됨');
-                if(pollTimer){{ try{{ clearInterval(pollTimer); }}catch(e){{}} pollTimer = null; append('[logs] 폴링 중지'); }}
-              }};
-              es.onmessage = function(e){{ established = true; clearTimeout(fallbackTimer); append(e.data); }};
-              es.onerror = function(){{
-                append('[logs] SSE 연결 끊김 - 폴링으로 계속');
-                try{{ es.close(); }}catch(e){{}}
-                if(!pollTimer) startPoll();
-              }};
-            }}catch(e){{ console.error('SSE init failed', e); startPoll(); }}
-          }})();
+            }})();
+          }}
         </script>
       </body>
     </html>
@@ -826,20 +934,65 @@ def start(
     # 환경변수 확인
     env_check = check_env_vars()
     if not env_check.get("MEMBER_NUMBER") or not env_check.get("PASSWORD"):
-        return render_page("⚠️ 환경변수가 설정되지 않았습니다. '환경변수 입력' 버튼을 클릭하여 설정하세요.")
+        return render_page(
+            "⚠️ 환경변수가 설정되지 않았습니다. '환경변수 입력' 버튼을 클릭하여 설정하세요.",
+            arrival=arrival,
+            departure=departure,
+            standard_date=standard_date,
+            standard_time=standard_time,
+            seat_types=seat_types,
+            from_train_number=from_train_number,
+            to_train_number=to_train_number,
+        )
     
     # Basic input validation
     if from_train_number > to_train_number:
-        return render_page("조회 시작 순번은 종료 순번보다 클 수 없습니다.")
+        return render_page(
+            "조회 시작 순번은 종료 순번보다 클 수 없습니다.",
+            arrival=arrival,
+            departure=departure,
+            standard_date=standard_date,
+            standard_time=standard_time,
+            seat_types=seat_types,
+            from_train_number=from_train_number,
+            to_train_number=to_train_number,
+        )
 
     if not (1 <= from_train_number <= 10 and 1 <= to_train_number <= 10):
-        return render_page("열차 순번은 1~10 사이여야 합니다.")
+        return render_page(
+            "열차 순번은 1~10 사이여야 합니다.",
+            arrival=arrival,
+            departure=departure,
+            standard_date=standard_date,
+            standard_time=standard_time,
+            seat_types=seat_types,
+            from_train_number=from_train_number,
+            to_train_number=to_train_number,
+        )
 
     if not (len(standard_date) == 8 and standard_date.isdigit()):
-        return render_page("기준 날짜는 YYYYMMDD 8자리 숫자여야 합니다.")
+        return render_page(
+            "기준 날짜는 YYYYMMDD 8자리 숫자여야 합니다.",
+            arrival=arrival,
+            departure=departure,
+            standard_date=standard_date,
+            standard_time=standard_time,
+            seat_types=seat_types,
+            from_train_number=from_train_number,
+            to_train_number=to_train_number,
+        )
 
     if standard_time not in {"00","02","04","06","08","10","12","14","16","18","20","22"}:
-        return render_page("기준 시간은 00,02,04,...,22 중 하나여야 합니다.")
+        return render_page(
+            "기준 시간은 00,02,04,...,22 중 하나여야 합니다.",
+            arrival=arrival,
+            departure=departure,
+            standard_date=standard_date,
+            standard_time=standard_time,
+            seat_types=seat_types,
+            from_train_number=from_train_number,
+            to_train_number=to_train_number,
+        )
 
     if STATE.running:
         return render_page("이미 실행 중입니다.")
@@ -859,12 +1012,30 @@ def start(
             STATE._append_log("[ui] 시작 실패: " + (STATE.last_error or "사유 미상"))
         except Exception:
             pass
-        return render_page("시작할 수 없습니다.")
+        return render_page(
+            "시작할 수 없습니다.",
+            arrival=arrival,
+            departure=departure,
+            standard_date=standard_date,
+            standard_time=standard_time,
+            seat_types=seat_types,
+            from_train_number=from_train_number,
+            to_train_number=to_train_number,
+        )
     try:
         STATE._append_log("[ui] 매크로 시작")
     except Exception:
         pass
-    return render_page("시작되었습니다.")
+    return render_page(
+        "시작되었습니다.",
+        arrival=arrival,
+        departure=departure,
+        standard_date=standard_date,
+        standard_time=standard_time,
+        seat_types=seat_types,
+        from_train_number=from_train_number,
+        to_train_number=to_train_number,
+    )
 
 
 @app.post("/stop")
@@ -1131,9 +1302,8 @@ async def logs_stream():
     async def event_gen():
         # Small greeting to prove connection
         yield "data: [logs] connected\n\n"
-        # First: flush current buffer snapshot
-        for line in list(STATE._log_buffer):  # snapshot
-            yield f"data: {line}\n\n"
+        # 버퍼 flush 제거: 폴링과 중복 방지
+        # SSE는 새로운 메시지만 전송하고, 초기 버퍼는 폴링이 처리하도록 함
         try:
             while True:
                 try:
