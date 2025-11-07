@@ -13,9 +13,9 @@ COPY . /app
 WORKDIR /app
 
 # uv를 사용해 pyproject.toml 기반 의존성 설치
-RUN uv pip install --system
+RUN uv sync --system
 
 # 실행
-CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "5000"]
+CMD ["uv", "run", "api_server.py"]
 
-EXPOSE 5000
+EXPOSE 8000
