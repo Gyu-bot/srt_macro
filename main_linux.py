@@ -501,6 +501,7 @@ def main(
                             submit.evaluate("el => el.click()")
                             refresh_count += 1
                             log_info(f"{refresh_count}번째 새로고침")
+                            wait_for_page_idle(page, timeout=3000)
                         else:
                             log_info("새로고침 버튼을 찾을 수 없음. 페이지 초기화")
                             page.go_back(wait_until="load")
@@ -516,9 +517,6 @@ def main(
                             wait_for_page_idle(page, timeout=5000)
                         except Exception as reload_error:
                             log_error("페이지 초기화 실패", error=reload_error, exit_on_error=True)
-
-                    page.wait_for_timeout(2000)
-                    time.sleep(2)
                 else:
                     time.sleep(1000)
                     break

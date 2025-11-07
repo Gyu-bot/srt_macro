@@ -1197,8 +1197,10 @@ def env_form() -> HTMLResponse:
                 msgEl.style.background = '#f0fdf4';
                 msgEl.style.border = '1px solid #86efac';
                 setTimeout(function() {{
+                  // 부모 창이 있으면 리로드 (실행은 하지 않음)
                   if(window.opener) {{
-                    window.opener.location.reload();
+                    // 부모 창의 URL을 현재 URL로 변경하여 리로드 (자동 실행 방지)
+                    window.opener.location.href = window.opener.location.pathname;
                   }}
                   window.close();
                 }}, 1500);
