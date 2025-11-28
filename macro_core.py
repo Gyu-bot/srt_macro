@@ -418,6 +418,8 @@ def main(
 
                 except Exception as e:
                     log_error("잔여석 조회 루프 중 오류", error=e)
+                    if "Execution context was destroyed" in str(e):
+                        send_discord_notification(f"⚠️ SRT 매크로 재시도 중 오류 발생\n\n{str(e)}")
 
                 # Refresh logic
                 if not reserved:
