@@ -16,7 +16,7 @@ WORKDIR /app
 RUN uv sync
 
 # Playwright 브라우저 설치 (Chromium + 의존성)
-RUN playwright install chromium --with-deps
+RUN uv run playwright install chromium --with-deps
 
 # 환경 변수 설정
 ENV PLAYWRIGHT_HEADLESS=true
