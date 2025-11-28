@@ -45,8 +45,8 @@ def log_error(message: str, error: Optional[Exception] = None, exit_on_error: bo
         except Exception:
             pass
     
-    # status_q에 에러 전달
-    if _status_q is not None:
+    # status_q에 에러 전달 (치명적 오류인 경우에만)
+    if _status_q is not None and exit_on_error:
         try:
             _status_q.put({"status": "error", "message": message})
         except Exception:
@@ -100,6 +100,19 @@ def wait_for_page_idle(page: Page, timeout: int = SHORT_TIMEOUT) -> None:
     try:
         page.wait_for_load_state("networkidle", timeout=timeout)
     except PlaywrightTimeoutError:
+        pass
+
+
+def handle_waiting_popup(page: Page) -> None:
+    """'접속대기 중입니다' 팝업이 뜨면 사라질 때까지 대기합니다."""
+    try:
+        # 팝업 텍스트가 포함된 요소 찾기
+        popup = page.get_by_text("접속대기", exact=False)
+        if popup.count() > 0 and popup.first.is_visible():
+            log_info("접속 대기 팝업 감지. 대기 중...")
+            popup.first.wait_for(state="hidden", timeout=30000)  # 최대 30초 대기
+            log_info("접속 대기 해제됨.")
+    except Exception:
         pass
 
 
@@ -334,6 +347,7 @@ def main(
             try:
                 log_info("조회 버튼 클릭...")
                 page.click("input[value='조회하기']")
+                handle_waiting_popup(page)
                 wait_for_page_idle(page, timeout=10000)
             except Exception as e:
                 log_error("조회 버튼 클릭 실패", error=e, exit_on_error=True)
@@ -373,11 +387,17 @@ def main(
                                 # Click the link/button inside the cell
                                 btn_selector = f"{cell_selector} a"
                                 try:
-                                    page.click(btn_selector, force=True)
+                                    # Try to click the button normally (without force=True to ensure actionability)
+                                    # If it fails, we can try JS click as fallback
+                                    # Use .first to avoid strict mode violation (matches reservation and standby buttons)
+                                    target_btn = page.locator(btn_selector).first
+                                    target_btn.click()
+                                    
+                                    handle_waiting_popup(page)
                                     wait_for_page_idle(page, timeout=10000)
                                     
                                     # Check success
-                                    if has_element(page, "#isFalseGotoMain") or "결제" in page.title():
+                                    if has_element(page, "#isFalseGotoMain") or "결제" in page.title() or page.get_by_text("결제하기").count() > 0:
                                         reserved = True
                                         log_info(">>> 예약 성공! <<<")
                                         send_discord_notification("SRT 예약 성공! 10분 내에 결제하세요.")
@@ -392,26 +412,26 @@ def main(
                                     page.go_back()
                             
                             # Standby (Queue)
-                            elif "신청하기" in get_cell_text(page, f"{row_selector} > td:nth-child(8)"):
-                                # Standby column is usually 8
-                                log_info(f"[{row_index}번 열차] 예약 대기 가능. 신청 시도...")
-                                try:
-                                    page.click(f"{row_selector} > td:nth-child(8) a", force=True)
-                                    wait_for_page_idle(page, timeout=10000)
+                            # elif "신청하기" in get_cell_text(page, f"{row_selector} > td:nth-child(8)"):
+                            #     # Standby column is usually 8
+                            #     log_info(f"[{row_index}번 열차] 예약 대기 가능. 신청 시도...")
+                            #     try:
+                            #         page.click(f"{row_selector} > td:nth-child(8) a", force=True)
+                            #         wait_for_page_idle(page, timeout=10000)
                                     
-                                    if has_element(page, "#isFalseGotoMain"):
-                                        reserved = True
-                                        log_info(">>> 예약 대기 신청 성공! <<<")
-                                        send_discord_notification("SRT 예약 대기 신청 성공!")
-                                        open_reservation_page(RESERVATION_URL)
-                                        break
-                                    else:
-                                        log_info("예약 대기 신청 실패. 다시 검색...")
-                                        page.go_back()
-                                        wait_for_page_idle(page)
-                                except Exception as e:
-                                    log_error(f"예약 대기 클릭 중 오류 (row={row_index})", error=e)
-                                    page.go_back()
+                            #         if has_element(page, "#isFalseGotoMain"):
+                            #             reserved = True
+                            #             log_info(">>> 예약 대기 신청 성공! <<<")
+                            #             send_discord_notification("SRT 예약 대기 신청 성공!")
+                            #             open_reservation_page(RESERVATION_URL)
+                            #             break
+                            #         else:
+                            #             log_info("예약 대기 신청 실패. 다시 검색...")
+                            #             page.go_back()
+                            #             wait_for_page_idle(page)
+                            #     except Exception as e:
+                            #         log_error(f"예약 대기 클릭 중 오류 (row={row_index})", error=e)
+                            #         page.go_back()
                         
                         if reserved: break
                     if reserved: break
@@ -435,6 +455,7 @@ def main(
                         else:
                             page.reload()
                         
+                        handle_waiting_popup(page)
                         wait_for_page_idle(page)
                         # Wait a bit to avoid being blocked
                         time.sleep(0.5)
