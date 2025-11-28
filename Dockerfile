@@ -13,7 +13,7 @@ COPY . /app
 WORKDIR /app
 
 # uv를 사용해 pyproject.toml 기반 의존성 설치
-RUN uv sync --system
+RUN uv sync
 
 # Playwright 브라우저 설치 (Chromium + 의존성)
 RUN playwright install chromium --with-deps
