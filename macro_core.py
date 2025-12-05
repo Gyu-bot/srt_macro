@@ -2,6 +2,7 @@
 # version : 2.0.0-playwright
 
 import os
+import random
 import sys
 import time
 import webbrowser
@@ -206,7 +207,19 @@ def launch_browser(playwright: Playwright) -> tuple[Browser, BrowserContext]:
             fallback_options["channel"] = "chromium"
         browser = playwright.chromium.launch(**fallback_options)
     
-    context = browser.new_context()
+    # iPhone Safari User-Agent 및 viewport 설정
+    IPHONE_USER_AGENT = (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    )
+    
+    context = browser.new_context(
+        user_agent=IPHONE_USER_AGENT,
+        viewport={"width": 390, "height": 844},  # iPhone 14 해상도
+        device_scale_factor=3,
+        is_mobile=True,
+        has_touch=True,
+    )
     context.set_default_timeout(DEFAULT_TIMEOUT)
     context.set_default_navigation_timeout(DEFAULT_TIMEOUT)
     
@@ -444,6 +457,11 @@ def main(
                 # Refresh logic
                 if not reserved:
                     refresh_count += 1
+                    
+                    # Wait a bit to avoid being blocked (랜덤 딜레이 0.5~1.5초)
+                    delay = random.uniform(0.5, 2.3)
+                    time.sleep(delay)
+                    
                     log_info(f"새로고침 {refresh_count}회")
                     
                     try:
@@ -457,8 +475,6 @@ def main(
                         
                         handle_waiting_popup(page)
                         wait_for_page_idle(page)
-                        # Wait a bit to avoid being blocked
-                        time.sleep(0.5)
                     except Exception as e:
                         log_error("새로고침 실패, 페이지 재로딩", error=e)
                         page.reload()
