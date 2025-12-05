@@ -373,112 +373,113 @@ def main(
             except PlaywrightTimeoutError:
                 log_error(f"결과 테이블을 찾을 수 없습니다. URL: {page.url}", exit_on_error=True)
 
+            # 좌석 타입별 CSS selector 생성 (특실: 6, 일반: 7)
+            def build_reserve_btn_selectors() -> List[tuple[str, int, int]]:
+                """예약 버튼 셀렉터 목록 생성 (우선순위 순) - (selector, row_idx, seat_type)"""
+                selectors = []
+                for row_idx in range(from_train_number, to_train_number + 1):
+                    for seat_type in seat_type_list:
+                        # "예약하기" 텍스트가 포함된 버튼만 찾음 (:has-text 사용)
+                        selector = (
+                            f"{result_table_selector} > tr:nth-child({row_idx}) "
+                            f"> td:nth-child({seat_type}) a:has-text('예약하기')"
+                        )
+                        selectors.append((selector, row_idx, seat_type))
+                return selectors
+
             while True:
                 try:
-                    for seat_type in seat_type_list:
-                        # seat_type: 6 (Special), 7 (Standard)
-                        # Column indices in the table:
-                        # The table structure might change, but usually:
-                        # ... | 특실 | 일반실 | 예약대기 | ...
-                        # nth-child is 1-based.
-                        
-                        for row_index in range(from_train_number, to_train_number + 1):
-                            # Using nth-child for row
-                            row_selector = f"{result_table_selector} > tr:nth-child({row_index})"
-                            
-                            # Check if row exists
-                            if page.locator(row_selector).count() == 0:
-                                continue
-
-                            # Cell selector
-                            cell_selector = f"{row_selector} > td:nth-child({seat_type})"
-                            cell_text = get_cell_text(page, cell_selector)
-                            
-                            if "예약하기" in cell_text:
-                                log_info(f"[{row_index}번 열차] 예약 가능 확인! 시도 중...")
+                    # === 최적화 1: 모든 예약 버튼 한번에 탐지 (텍스트 확인 포함) ===
+                    for btn_selector, row_idx, seat_type in build_reserve_btn_selectors():
+                        btn = page.locator(btn_selector)
+                        if btn.count() > 0:
+                            # "예약하기" 텍스트가 있는 버튼만 매칭됨
+                            try:
+                                seat_name = "특실" if seat_type == 6 else "일반실"
+                                log_info(f"[{row_idx}번 열차/{seat_name}] 예약 버튼 발견! 즉시 클릭...")
                                 
-                                # Click the link/button inside the cell
-                                btn_selector = f"{cell_selector} a"
+                                # === 최적화 2: JS 직접 클릭 (actionability 체크 생략) ===
+                                btn.first.evaluate("el => el.click()")
+                                
+                                # === 최적화 3: 최소한의 대기 ===
+                                handle_waiting_popup(page)
+                                # networkidle 대신 특정 요소만 확인
                                 try:
-                                    # Try to click the button normally (without force=True to ensure actionability)
-                                    # If it fails, we can try JS click as fallback
-                                    # Use .first to avoid strict mode violation (matches reservation and standby buttons)
-                                    target_btn = page.locator(btn_selector).first
-                                    target_btn.click()
+                                    page.wait_for_selector(
+                                        "#isFalseGotoMain, .payment, input[value='결제하기']",
+                                        timeout=5000
+                                    )
+                                except PlaywrightTimeoutError:
+                                    pass  # 타임아웃이어도 계속 진행
+                                
+                                # 예약 성공 여부 확인
+                                if has_element(page, "#isFalseGotoMain") or "결제" in page.title() or page.get_by_text("결제하기").count() > 0:
+                                    reserved = True
+                                    log_info(">>> 예약 성공! <<<")
+                                    send_discord_notification("SRT 예약 성공! 10분 내에 결제하세요.")
+                                    open_reservation_page(RESERVATION_URL)
+                                    break
+                                else:
+                                    log_info("예약 실패 (잔여석 선점됨). 다시 검색...")
+                                    page.go_back(wait_until="domcontentloaded")
+                                    # 테이블이 다시 로드될 때까지만 대기
+                                    try:
+                                        page.wait_for_selector(result_table_selector, timeout=5000)
+                                    except PlaywrightTimeoutError:
+                                        pass
+                                    break  # 다음 새로고침 사이클로
                                     
-                                    handle_waiting_popup(page)
-                                    wait_for_page_idle(page, timeout=10000)
-                                    
-                                    # Check success
-                                    if has_element(page, "#isFalseGotoMain") or "결제" in page.title() or page.get_by_text("결제하기").count() > 0:
-                                        reserved = True
-                                        log_info(">>> 예약 성공! <<<")
-                                        send_discord_notification("SRT 예약 성공! 10분 내에 결제하세요.")
-                                        open_reservation_page(RESERVATION_URL)
-                                        break
-                                    else:
-                                        log_info("예약 실패 (잔여석 선점됨). 다시 검색...")
-                                        page.go_back(wait_until="domcontentloaded")
-                                        wait_for_page_idle(page)
-                                except Exception as e:
-                                    log_error(f"예약 클릭 중 오류 (row={row_index})", error=e)
-                                    page.go_back()
-                            
-                            # Standby (Queue)
-                            # elif "신청하기" in get_cell_text(page, f"{row_selector} > td:nth-child(8)"):
-                            #     # Standby column is usually 8
-                            #     log_info(f"[{row_index}번 열차] 예약 대기 가능. 신청 시도...")
-                            #     try:
-                            #         page.click(f"{row_selector} > td:nth-child(8) a", force=True)
-                            #         wait_for_page_idle(page, timeout=10000)
-                                    
-                            #         if has_element(page, "#isFalseGotoMain"):
-                            #             reserved = True
-                            #             log_info(">>> 예약 대기 신청 성공! <<<")
-                            #             send_discord_notification("SRT 예약 대기 신청 성공!")
-                            #             open_reservation_page(RESERVATION_URL)
-                            #             break
-                            #         else:
-                            #             log_info("예약 대기 신청 실패. 다시 검색...")
-                            #             page.go_back()
-                            #             wait_for_page_idle(page)
-                            #     except Exception as e:
-                            #         log_error(f"예약 대기 클릭 중 오류 (row={row_index})", error=e)
-                            #         page.go_back()
-                        
-                        if reserved: break
-                    if reserved: break
+                            except Exception as e:
+                                log_error("예약 클릭 중 오류", error=e)
+                                try:
+                                    page.go_back(wait_until="domcontentloaded")
+                                except Exception:
+                                    pass
+                                break
+                    
+                    if reserved:
+                        break
 
                 except Exception as e:
                     log_error("잔여석 조회 루프 중 오류", error=e)
-                    if "Execution context was destroyed" in str(e):
-                        send_discord_notification(f"⚠️ SRT 매크로 재시도 중 오류 발생\n\n{str(e)}")
+                    # 매크로가 종료되지 않고 계속 실행되므로 Discord 알림은 보내지 않음
 
                 # Refresh logic
                 if not reserved:
                     refresh_count += 1
                     
-                    # Wait a bit to avoid being blocked (랜덤 딜레이 0.5~1.5초)
-                    delay = random.uniform(0.5, 2.3)
+                    # === 최적화 4: 랜덤 딜레이 조정 (0.3~1.5초) ===
+                    delay = random.uniform(0.3, 1.5)
                     time.sleep(delay)
                     
-                    log_info(f"새로고침 {refresh_count}회")
+                    log_info(f"새로고침 {refresh_count}회 (딜레이: {delay:.2f}s)")
                     
                     try:
-                        # Try to click the 'Refresh' button if available, or just reload
-                        # Usually there is a submit button in the list page to refresh
+                        # 조회 버튼 JS 클릭 (더 빠름)
                         submit_btn = page.locator("#submit, input[value='조회하기']")
                         if submit_btn.count() > 0:
-                            submit_btn.first.click()
+                            submit_btn.first.evaluate("el => el.click()")
                         else:
                             page.reload()
                         
                         handle_waiting_popup(page)
-                        wait_for_page_idle(page)
+                        
+                        # === 최적화 3: networkidle 대신 테이블만 기다림 ===
+                        try:
+                            page.wait_for_selector(
+                                f"{result_table_selector} > tr:nth-child({from_train_number})",
+                                timeout=8000
+                            )
+                        except PlaywrightTimeoutError:
+                            log_info("테이블 로딩 지연, 계속 진행...")
+                            
                     except Exception as e:
                         log_error("새로고침 실패, 페이지 재로딩", error=e)
                         page.reload()
-                        wait_for_page_idle(page)
+                        try:
+                            page.wait_for_selector(result_table_selector, timeout=10000)
+                        except PlaywrightTimeoutError:
+                            pass
                 else:
                     break
 
